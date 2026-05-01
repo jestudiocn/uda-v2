@@ -1,0 +1,51 @@
+CREATE TABLE IF NOT EXISTS mig_v1_accounts (
+    id INT UNSIGNED PRIMARY KEY,
+    account_name VARCHAR(120) NOT NULL,
+    account_type VARCHAR(80) DEFAULT NULL,
+    status TINYINT(1) NOT NULL DEFAULT 1
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
+
+CREATE TABLE IF NOT EXISTS mig_v1_transaction_categories (
+    id INT UNSIGNED PRIMARY KEY,
+    name VARCHAR(120) NOT NULL,
+    type VARCHAR(20) NOT NULL,
+    status TINYINT(1) NOT NULL DEFAULT 1
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
+
+CREATE TABLE IF NOT EXISTS mig_v1_transactions (
+    id INT UNSIGNED PRIMARY KEY,
+    type VARCHAR(20) NOT NULL,
+    amount DECIMAL(14,2) NOT NULL DEFAULT 0.00,
+    client VARCHAR(160) DEFAULT NULL,
+    category_id INT UNSIGNED NOT NULL,
+    account_id INT UNSIGNED NOT NULL,
+    description VARCHAR(500) DEFAULT NULL,
+    created_by INT UNSIGNED DEFAULT NULL,
+    created_at DATETIME DEFAULT NULL
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
+
+CREATE TABLE IF NOT EXISTS mig_v1_payables (
+    id INT UNSIGNED PRIMARY KEY,
+    vendor_name VARCHAR(160) NOT NULL,
+    amount DECIMAL(14,2) NOT NULL DEFAULT 0.00,
+    expected_pay_date DATE NOT NULL,
+    remark VARCHAR(500) DEFAULT NULL,
+    status VARCHAR(20) NOT NULL DEFAULT 'pending',
+    created_by INT UNSIGNED DEFAULT NULL,
+    paid_at DATETIME DEFAULT NULL,
+    paid_transaction_id INT UNSIGNED DEFAULT NULL,
+    created_at DATETIME DEFAULT NULL
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
+
+CREATE TABLE IF NOT EXISTS mig_v1_receivables (
+    id INT UNSIGNED PRIMARY KEY,
+    client_name VARCHAR(160) NOT NULL,
+    amount DECIMAL(14,2) NOT NULL DEFAULT 0.00,
+    expected_receive_date DATE NOT NULL,
+    remark VARCHAR(500) DEFAULT NULL,
+    status VARCHAR(20) NOT NULL DEFAULT 'pending',
+    created_by INT UNSIGNED DEFAULT NULL,
+    received_at DATETIME DEFAULT NULL,
+    received_transaction_id INT UNSIGNED DEFAULT NULL,
+    created_at DATETIME DEFAULT NULL
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;

@@ -1,0 +1,2 @@
+ALTER TABLE users
+    ADD COLUMN IF NOT EXISTS locale VARCHAR(10) NULL DEFAULT NULL AFTER must_change_password;
