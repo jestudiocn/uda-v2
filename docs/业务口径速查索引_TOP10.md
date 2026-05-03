@@ -107,6 +107,7 @@
 8. `uda_warehouse_batches.jd_count` -> JD件数 -> JD件数
 9. `uda_warehouse_batches.total_count` -> 总件数 -> 总件数
 10. `uda_warehouse_batch_waybills.tracking_no` -> 面单号 -> 批次面单
+11. 装箱单导出（`manifestPackingListExport`） -> 按日期号汇总集包/面单生成 xlsx；净重为导出时「毛重合计×0.80～0.90（步进 0.01）」再取两位小数（非库字段）-> 入口：集包列表进入日期号明细后「导出装箱单（Excel）」
 
 ---
 

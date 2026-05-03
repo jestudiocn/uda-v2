@@ -75,8 +75,8 @@ $stopsFinalState = (int)($stopsFinalState ?? 0);
 
 <div class="page-delivery-docs">
 <div class="card">
-    <h2 style="margin:0 0 6px 0;">派送业务 / 派送操作 / 派送单列表</h2>
-    <div class="muted">查看已生成的派送单（按派送单号聚合），可进入明细查看客户与件数。</div>
+    <h2 style="margin:0 0 6px 0;">派送业务 / 派送操作 / 初步派送单列表</h2>
+    <div class="muted">此处仅列出尚未转入正式派送单列表的初步派送单。从「分配派送单」生成成功后会跳转到本页。点「调整」：第一步增删客户 → 第二步<strong>拖动</strong>排序 → 确认后转入「正式派送单列表」（停靠与后续分段/拣货均按该顺序）。若无需改顺序，可直接点行内「转入正式派送单列表」按系统主/副路线排序。</div>
 </div>
 
 <?php if ($message !== ''): ?><div class="card" style="border-left:4px solid #16a34a;"><?php echo htmlspecialchars($message); ?></div><?php endif; ?>
@@ -110,7 +110,7 @@ $stopsFinalState = (int)($stopsFinalState ?? 0);
                     <th>客户数</th>
                     <th>总件数</th>
                     <th>生成时间</th>
-                    <th>操作</th>
+                    <th style="min-width:320px;">操作</th>
                 </tr>
             </thead>
             <tbody>
@@ -126,7 +126,21 @@ $stopsFinalState = (int)($stopsFinalState ?? 0);
                             <td><?php echo (int)($r['customer_count'] ?? 0); ?></td>
                             <td><?php echo (int)($r['piece_count'] ?? 0); ?></td>
                             <td><?php echo htmlspecialchars((string)($r['created_at'] ?? '')); ?></td>
-                            <td><a class="btn" style="padding:4px 10px;min-height:auto;" href="/dispatch/ops/delivery-docs?delivery_doc_no=<?php echo urlencode($docNo); ?>">查看明细</a></td>
+                            <td>
+                                <div class="inline-actions" style="gap:6px;flex-wrap:wrap;">
+                                    <button type="button" class="btn dd-adjust-btn" data-doc="<?php echo htmlspecialchars($docNo, ENT_QUOTES, 'UTF-8'); ?>" style="background:#1d4ed8;color:#fff;border-color:#1e40af;">调整</button>
+                                    <form method="post" style="display:inline;margin:0;" onsubmit="return confirm('确认将本单转入「正式派送单列表」？将发布停靠顺序，之后不可再回到本初步列表修改。');">
+                                        <input type="hidden" name="action" value="step3_generate_segment_nav">
+                                        <input type="hidden" name="delivery_doc_no" value="<?php echo htmlspecialchars($docNo); ?>">
+                                        <button type="submit" style="background:#15803d;color:#fff;border-color:#166534;">转入正式派送单列表</button>
+                                    </form>
+                                    <form method="post" style="display:inline;margin:0;" onsubmit="return confirm('确认删除本初步派送单？单内所有客户将回到「分配派送单」列表。');">
+                                        <input type="hidden" name="action" value="delete_preliminary_delivery_doc">
+                                        <input type="hidden" name="delivery_doc_no" value="<?php echo htmlspecialchars($docNo); ?>">
+                                        <button type="submit" style="background:#b91c1c;color:#fff;">删除</button>
+                                    </form>
+                                </div>
+                            </td>
                         </tr>
                     <?php endforeach; ?>
                 <?php endif; ?>
@@ -135,129 +149,391 @@ $stopsFinalState = (int)($stopsFinalState ?? 0);
     </div>
 </div>
 
-<?php if ($viewDocNo !== ''): ?>
 <div class="card">
-    <h3 style="margin:0 0 10px 0;">派送单明细：<?php echo htmlspecialchars($viewDocNo); ?></h3>
-    <div class="dd-table-wrap">
-        <table class="data-table">
-            <thead>
-                <tr>
-                    <th>顺序</th>
-                    <th>段</th>
-                    <th>客户编码</th>
-                    <th>微信/Line号</th>
-                    <th>主/副线路</th>
-                    <th>件数</th>
-                </tr>
-            </thead>
-            <tbody>
-                <?php foreach ($detailRows as $d): ?>
-                    <tr>
-                        <td><?php echo max(1, (int)($d['stop_order'] ?? 0)); ?></td>
-                        <td><?php echo (int)($d['segment_index'] ?? 0) + 1; ?></td>
-                        <td><?php echo htmlspecialchars((string)($d['customer_code'] ?? '')); ?></td>
-                        <td><?php echo htmlspecialchars((string)($d['wx_or_line'] ?? '')); ?></td>
-                        <td><?php echo htmlspecialchars(((string)($d['route_primary'] ?? '')) . '/' . ((string)($d['route_secondary'] ?? ''))); ?></td>
-                        <td><?php echo (int)($d['piece_count'] ?? 0); ?></td>
-                    </tr>
-                <?php endforeach; ?>
-            </tbody>
-        </table>
-    </div>
-    <?php
-    $scheme = (!empty($_SERVER['HTTPS']) && $_SERVER['HTTPS'] !== 'off') ? 'https' : 'http';
-    $host = (string)($_SERVER['HTTP_HOST'] ?? '');
-    $baseDriver = $host !== '' ? ($scheme . '://' . $host . '/dispatch/driver/run?t=') : '/dispatch/driver/run?t=';
-    ?>
-    <section class="delivery-docs-driver">
-        <h3 style="margin:0 0 8px 0;">司机端（免登录 · 当前为中文界面）</h3>
-        <p class="muted" style="margin:0 0 8px 0;">
-            当前状态：<?php echo $stopsFinalState === 1 ? '已发布最终派送单（司机使用此顺序）' : '草稿（可先优化，再发布）'; ?>
-        </p>
-        <p class="muted" style="margin:0 0 10px 0;">流程建议：先“优化排序（草稿）” -> 确认后“发布为最终派送单” -> 最后“生成司机端链接”。每段最多 6 位客户。</p>
-        <div class="inline-actions" style="margin-bottom:12px;">
-            <form method="post">
-                <input type="hidden" name="action" value="optimize_delivery_doc_stops">
-                <input type="hidden" name="delivery_doc_no" value="<?php echo htmlspecialchars($viewDocNo); ?>">
-                <button type="submit">优化排序（草稿）</button>
-            </form>
-            <form method="post">
-                <input type="hidden" name="action" value="finalize_delivery_doc_stops">
-                <input type="hidden" name="delivery_doc_no" value="<?php echo htmlspecialchars($viewDocNo); ?>">
-                <button type="submit" style="background:#0f766e;">发布为最终派送单</button>
+    <div class="muted">下方明细区已移至新页面：<a href="/dispatch/ops/formal-delivery-docs">正式派送单列表</a> 与 <a href="/dispatch/ops/delivery-pick-sheets">派送单拣货表</a>。</div>
+</div>
+
+<style>
+    .dd-sort-ul { list-style:none;margin:0;padding:0; }
+    .dd-sort-li { display:flex;align-items:center;gap:10px;padding:10px 12px;border:1px solid #e2e8f0;border-radius:8px;margin-bottom:8px;background:#f8fafc;cursor:grab; }
+    .dd-sort-li:active { cursor:grabbing; }
+    .dd-sort-handle { color:#64748b;user-select:none;font-size:14px;letter-spacing:-2px; }
+    #dd-adjust-step2 { display:none; }
+</style>
+<div id="dd-adjust-modal" style="display:none;position:fixed;inset:0;background:rgba(0,0,0,0.5);z-index:10050;align-items:center;justify-content:center;padding:16px;box-sizing:border-box;" role="dialog" aria-modal="true" aria-labelledby="dd-adjust-title">
+    <div class="dd-modal-inner" style="position:relative;width:100%;max-width:960px;background:#fff;border-radius:10px;box-shadow:0 12px 40px rgba(0,0,0,.22);display:flex;flex-direction:column;max-height:min(92vh, 820px);overflow:hidden;min-height:0;">
+        <div style="display:flex;align-items:center;justify-content:space-between;gap:12px;padding:12px 14px;border-bottom:1px solid #e5e7eb;flex-shrink:0;">
+            <h3 id="dd-adjust-title" style="margin:0;font-size:16px;">调整初步派送单</h3>
+            <button type="button" class="btn dd-adjust-modal-close" aria-label="关闭">关闭</button>
+        </div>
+        <div style="flex:1 1 auto;min-height:0;padding:12px 14px;overflow:auto;">
+            <p id="dd-adjust-loading" class="muted" style="margin:0 0 8px 0;">加载中…</p>
+            <p id="dd-adjust-error" class="muted" style="display:none;margin:0 0 8px 0;color:#b91c1c;"></p>
+            <form method="post" id="dd-adjust-wizard-form" style="display:none;">
+                <input type="hidden" name="action" value="preliminary_adjust_order_and_formal">
+                <input type="hidden" name="delivery_doc_no" id="dd-adjust-doc-no" value="">
+                <div id="dd-adjust-order-inputs"></div>
+                <div id="dd-adjust-step1">
+                    <p class="muted" style="margin:0 0 10px;font-size:13px;"><strong>第 1 步</strong>：勾选要从本单<strong>移除</strong>的客户；在分配池勾选要<strong>追加</strong>的客户。点「下一步」进入拖动排序。</p>
+                    <h4 style="margin:12px 0 6px;font-size:14px;">本单客户（移除）</h4>
+                    <div style="overflow:auto;max-height:32vh;">
+                        <table class="data-table" style="min-width:560px;margin:0;">
+                            <thead>
+                                <tr>
+                                    <th>客户编码</th>
+                                    <th>微信/Line</th>
+                                    <th>件数</th>
+                                    <th>主/副线路</th>
+                                    <th style="width:72px;text-align:center;">移除</th>
+                                </tr>
+                            </thead>
+                            <tbody id="dd-adjust-remove-tbody"></tbody>
+                        </table>
+                    </div>
+                    <h4 style="margin:16px 0 6px;font-size:14px;">可追加客户（分配池）</h4>
+                    <div style="overflow:auto;max-height:34vh;">
+                        <table class="data-table" style="min-width:640px;margin:0;">
+                            <thead>
+                                <tr>
+                                    <th>客户编码</th>
+                                    <th>微信/Line</th>
+                                    <th>派送件数</th>
+                                    <th>泰文小区</th>
+                                    <th>主/副线路</th>
+                                    <th style="width:72px;text-align:center;"><input type="checkbox" id="dd-adjust-add-check-all" title="全选"></th>
+                                </tr>
+                            </thead>
+                            <tbody id="dd-adjust-add-tbody"></tbody>
+                        </table>
+                    </div>
+                    <div class="inline-actions" style="margin-top:14px;gap:8px;flex-wrap:wrap;">
+                        <button type="button" id="dd-adjust-btn-next" style="background:#1d4ed8;color:#fff;">下一步：拖动排序</button>
+                        <button type="button" class="btn dd-adjust-modal-close">取消</button>
+                    </div>
+                </div>
+                <div id="dd-adjust-step2">
+                    <p class="muted" style="margin:0 0 10px;font-size:13px;"><strong>第 2 步</strong>：拖动整行调整<strong>派送先后顺序</strong>（首户在上）。确认后将按此顺序写入停靠并转入「正式派送单列表」。</p>
+                    <ul id="dd-adjust-sort-ul" class="dd-sort-ul" aria-label="客户顺序"></ul>
+                    <div class="inline-actions" style="margin-top:14px;gap:8px;flex-wrap:wrap;">
+                        <button type="button" id="dd-adjust-btn-back" class="btn">上一步</button>
+                        <button type="submit" id="dd-adjust-btn-submit" style="background:#15803d;color:#fff;">确认顺序并转入正式派送单列表</button>
+                        <button type="button" class="btn dd-adjust-modal-close">取消</button>
+                    </div>
+                </div>
             </form>
         </div>
-        <form method="post" style="margin-bottom:12px;">
-            <input type="hidden" name="action" value="create_driver_run_tokens">
-            <input type="hidden" name="delivery_doc_no" value="<?php echo htmlspecialchars($viewDocNo); ?>">
-            <button type="submit">生成 / 刷新本单全部段链接</button>
-        </form>
-        <?php if ($driverRunTokensForView === []): ?>
-            <p class="muted">尚未生成链接，请点击上方按钮。</p>
-        <?php else: ?>
-            <div class="driver-tokens-desktop dd-table-wrap">
-                <table class="data-table">
-                    <thead>
-                        <tr>
-                            <th>段序（从 1 起）</th>
-                            <th>过期时间</th>
-                            <th>司机页链接（可复制做二维码）</th>
-                        </tr>
-                    </thead>
-                    <tbody>
-                        <?php foreach ($driverRunTokensForView as $tr): ?>
-                            <?php
-                            $tok = (string)($tr['token'] ?? '');
-                            $seg = (int)($tr['segment_index'] ?? 0);
-                            $exp = (string)($tr['expires_at'] ?? '');
-                            $url = $baseDriver . rawurlencode($tok);
-                            ?>
-                            <tr>
-                                <td><?php echo (int)$seg + 1; ?></td>
-                                <td><?php echo htmlspecialchars($exp); ?></td>
-                                <td style="word-break:break-all;font-size:12px;"><a href="<?php echo htmlspecialchars($url); ?>" target="_blank" rel="noopener noreferrer"><?php echo htmlspecialchars($url); ?></a></td>
-                            </tr>
-                        <?php endforeach; ?>
-                    </tbody>
-                </table>
-            </div>
-            <div class="driver-tokens-mobile" aria-hidden="false">
-                <?php foreach ($driverRunTokensForView as $tr): ?>
-                    <?php
-                    $tok = (string)($tr['token'] ?? '');
-                    $seg = (int)($tr['segment_index'] ?? 0);
-                    $exp = (string)($tr['expires_at'] ?? '');
-                    $url = $baseDriver . rawurlencode($tok);
-                    ?>
-                    <div class="driver-token-card">
-                        <strong>第 <?php echo (int)$seg + 1; ?> 段</strong>
-                        <span class="muted" style="display:block;margin-top:4px;">过期：<?php echo htmlspecialchars($exp); ?></span>
-                        <a class="btn btn-block" href="<?php echo htmlspecialchars($url); ?>" target="_blank" rel="noopener noreferrer">打开司机页</a>
-                        <button type="button" class="btn btn-block copy-driver-url" style="background:#64748b;" data-url="<?php echo htmlspecialchars($url, ENT_QUOTES, 'UTF-8'); ?>">复制本段链接</button>
-                    </div>
-                <?php endforeach; ?>
-            </div>
-        <?php endif; ?>
-    </section>
+    </div>
 </div>
-<?php endif; ?>
 
 <script>
 (function () {
-    document.querySelectorAll('.page-delivery-docs .copy-driver-url').forEach(function (btn) {
-        btn.addEventListener('click', function () {
-            var u = btn.getAttribute('data-url') || '';
-            if (!u) return;
-            if (navigator.clipboard && navigator.clipboard.writeText) {
-                navigator.clipboard.writeText(u).then(function () {
-                    btn.textContent = '已复制';
-                    window.setTimeout(function () { btn.textContent = '复制本段链接'; }, 2000);
-                }).catch(function () {
-                    window.prompt('请长按复制链接', u);
-                });
+    function esc(s) {
+        return String(s == null ? '' : s).replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;');
+    }
+    function wxLine(r) {
+        var wx = String(r.wechat_id == null ? '' : r.wechat_id).trim();
+        var ln = String(r.line_id == null ? '' : r.line_id).trim();
+        if (wx === '' && ln === '') return '—';
+        if (wx === '') return esc(ln);
+        if (ln === '') return esc(wx);
+        return esc(wx) + ' / ' + esc(ln);
+    }
+    function routeText(rp, rs) {
+        var a = String(rp == null ? '' : rp).trim();
+        var b = String(rs == null ? '' : rs).trim();
+        if (a === '' && b === '') return '—';
+        if (a === '') return esc(b);
+        if (b === '') return esc(a);
+        return esc(a) + '/' + esc(b);
+    }
+    function getRemoveIdSet() {
+        var s = new Set();
+        document.querySelectorAll('#dd-adjust-remove-tbody input[type="checkbox"]:checked').forEach(function (c) {
+            var v = parseInt(String(c.value), 10) || 0;
+            if (v > 0) { s.add(v); }
+        });
+        return s;
+    }
+    function getAddIdSet() {
+        var s = new Set();
+        document.querySelectorAll('.dd-adjust-add-row:checked').forEach(function (c) {
+            var v = parseInt(String(c.value), 10) || 0;
+            if (v > 0) { s.add(v); }
+        });
+        return s;
+    }
+    function buildMergedSortRows(bindRows, poolRows, removeIdSet, addIdSet) {
+        var out = [];
+        bindRows.forEach(function (row) {
+            var id = parseInt(String(row.delivery_customer_id), 10) || 0;
+            if (id <= 0) { return; }
+            if (removeIdSet.has(id)) { return; }
+            var code = String(row.customer_code || '').trim();
+            if (!code) { return; }
+            out.push({
+                code: code,
+                route_primary: String(row.route_primary || '').trim(),
+                route_secondary: String(row.route_secondary || '').trim(),
+                label: esc(code) + ' · ' + wxLine(row)
+            });
+        });
+        var poolById = {};
+        poolRows.forEach(function (pr) {
+            var pid = parseInt(String(pr.id), 10) || 0;
+            if (pid > 0) { poolById[pid] = pr; }
+        });
+        addIdSet.forEach(function (addId) {
+            var pr = poolById[addId];
+            if (!pr) { return; }
+            var code = String(pr.customer_code || '').trim();
+            if (!code) { return; }
+            out.push({
+                code: code,
+                route_primary: String(pr.route_primary || '').trim(),
+                route_secondary: String(pr.route_secondary || '').trim(),
+                label: esc(code) + ' · ' + wxLine(pr)
+            });
+        });
+        out.sort(function (a, b) {
+            if (a.route_primary !== b.route_primary) { return a.route_primary.localeCompare(b.route_primary); }
+            if (a.route_secondary !== b.route_secondary) { return a.route_secondary.localeCompare(b.route_secondary); }
+            return a.code.localeCompare(b.code);
+        });
+        return out;
+    }
+    function wireDragSort(ul) {
+        var dragged = null;
+        ul.addEventListener('dragstart', function (e) {
+            var li = e.target && e.target.closest ? e.target.closest('li') : null;
+            if (!li || li.parentNode !== ul) { return; }
+            dragged = li;
+            li.style.opacity = '0.45';
+            try { e.dataTransfer.setData('text/plain', li.getAttribute('data-code') || ''); } catch (err) { /* ignore */ }
+            e.dataTransfer.effectAllowed = 'move';
+        });
+        ul.addEventListener('dragend', function () {
+            if (dragged) { dragged.style.opacity = '1'; }
+            dragged = null;
+        });
+        ul.addEventListener('dragover', function (e) {
+            e.preventDefault();
+            if (!dragged) { return; }
+            var li = e.target && e.target.closest ? e.target.closest('li') : null;
+            if (!li || li.parentNode !== ul || li === dragged) { return; }
+            var rect = li.getBoundingClientRect();
+            var before = (e.clientY - rect.top) < (rect.height / 2);
+            if (before) {
+                ul.insertBefore(dragged, li);
             } else {
-                window.prompt('请长按复制链接', u);
+                ul.insertBefore(dragged, li.nextSibling);
             }
+        });
+    }
+    function renderSortUl(rows) {
+        var ul = document.getElementById('dd-adjust-sort-ul');
+        if (!ul) { return; }
+        ul.innerHTML = '';
+        rows.forEach(function (r) {
+            var li = document.createElement('li');
+            li.className = 'dd-sort-li';
+            li.setAttribute('draggable', 'true');
+            li.setAttribute('data-code', r.code);
+            li.innerHTML = '<span class="dd-sort-handle" aria-hidden="true">⋮⋮</span><span style="flex:1;">' + r.label + '</span><span class="muted" style="font-size:12px;">' + routeText(r.route_primary, r.route_secondary) + '</span>';
+            ul.appendChild(li);
+        });
+        wireDragSort(ul);
+    }
+    function showStep1() {
+        var s1 = document.getElementById('dd-adjust-step1');
+        var s2 = document.getElementById('dd-adjust-step2');
+        if (s1) { s1.style.display = 'block'; }
+        if (s2) { s2.style.display = 'none'; }
+    }
+    function showStep2() {
+        var s1 = document.getElementById('dd-adjust-step1');
+        var s2 = document.getElementById('dd-adjust-step2');
+        if (s1) { s1.style.display = 'none'; }
+        if (s2) { s2.style.display = 'block'; }
+    }
+
+    var adjModal = document.getElementById('dd-adjust-modal');
+    var adjLoading = document.getElementById('dd-adjust-loading');
+    var adjErr = document.getElementById('dd-adjust-error');
+    var adjForm = document.getElementById('dd-adjust-wizard-form');
+    var adjDocNo = document.getElementById('dd-adjust-doc-no');
+    var adjTitle = document.getElementById('dd-adjust-title');
+    var adjRmTbody = document.getElementById('dd-adjust-remove-tbody');
+    var adjAddTbody = document.getElementById('dd-adjust-add-tbody');
+    var adjAddCheckAll = document.getElementById('dd-adjust-add-check-all');
+
+    function closeAdj() {
+        if (adjModal) { adjModal.style.display = 'none'; }
+        showStep1();
+    }
+
+    if (adjModal) {
+        adjModal.querySelectorAll('.dd-adjust-modal-close').forEach(function (b) {
+            b.addEventListener('click', closeAdj);
+        });
+        adjModal.addEventListener('click', function (e) {
+            if (e.target === adjModal) { closeAdj(); }
+        });
+        var inner = adjModal.querySelector('.dd-modal-inner');
+        if (inner) { inner.addEventListener('click', function (e) { e.stopPropagation(); }); }
+    }
+
+    document.addEventListener('keydown', function (e) {
+        if (e.key !== 'Escape') { return; }
+        if (adjModal && adjModal.style.display === 'flex') { closeAdj(); }
+    });
+
+    var btnNext = document.getElementById('dd-adjust-btn-next');
+    if (btnNext) {
+        btnNext.addEventListener('click', function () {
+            var bindRows = window.__ddAdjustBindRows || [];
+            var poolRows = window.__ddAdjustPoolRows || [];
+            var merged = buildMergedSortRows(bindRows, poolRows, getRemoveIdSet(), getAddIdSet());
+            if (merged.length === 0) {
+                window.alert('请至少保留或追加一位有客户编码的客户，再进入排序。');
+                return;
+            }
+            var codes = merged.map(function (m) { return m.code; });
+            var uniq = {};
+            var dup = false;
+            codes.forEach(function (c) {
+                if (uniq[c]) { dup = true; }
+                uniq[c] = true;
+            });
+            if (dup) {
+                window.alert('当前选择下存在重复客户编码，请调整移除/追加后再试。');
+                return;
+            }
+            renderSortUl(merged);
+            if (adjTitle) { adjTitle.textContent = '拖动排序 · ' + (adjDocNo && adjDocNo.value ? adjDocNo.value : ''); }
+            showStep2();
+        });
+    }
+    var btnBack = document.getElementById('dd-adjust-btn-back');
+    if (btnBack) {
+        btnBack.addEventListener('click', function () {
+            if (adjTitle) {
+                var d = adjDocNo && adjDocNo.value ? adjDocNo.value : '';
+                adjTitle.textContent = d ? '调整初步派送单 · ' + d : '调整初步派送单';
+            }
+            showStep1();
+        });
+    }
+    if (adjForm) {
+        adjForm.addEventListener('submit', function () {
+            var holder = document.getElementById('dd-adjust-order-inputs');
+            if (holder) { holder.innerHTML = ''; }
+            var ul = document.getElementById('dd-adjust-sort-ul');
+            if (!ul || !holder) { return; }
+            ul.querySelectorAll('li').forEach(function (li) {
+                var code = li.getAttribute('data-code') || '';
+                if (!code) { return; }
+                var inp = document.createElement('input');
+                inp.type = 'hidden';
+                inp.name = 'stop_order_customer_codes[]';
+                inp.value = code;
+                holder.appendChild(inp);
+            });
+            return window.confirm('确认按当前顺序转入「正式派送单列表」？将先应用移除/追加，再发布停靠顺序，之后不可再回到本初步列表。');
+        });
+    }
+
+    document.querySelectorAll('.dd-adjust-btn').forEach(function (btn) {
+        btn.addEventListener('click', function () {
+            var doc = btn.getAttribute('data-doc') || '';
+            if (!doc || !adjModal) { return; }
+            window.__ddAdjustBindRows = [];
+            window.__ddAdjustPoolRows = [];
+            adjModal.style.display = 'flex';
+            showStep1();
+            if (adjTitle) { adjTitle.textContent = '调整初步派送单 · ' + doc; }
+            if (adjDocNo) { adjDocNo.value = doc; }
+            if (adjLoading) { adjLoading.style.display = 'block'; adjLoading.textContent = '加载中…'; }
+            if (adjErr) { adjErr.style.display = 'none'; adjErr.textContent = ''; adjErr.style.color = '#b91c1c'; }
+            if (adjForm) { adjForm.style.display = 'none'; }
+            if (adjRmTbody) { adjRmTbody.innerHTML = ''; }
+            if (adjAddTbody) { adjAddTbody.innerHTML = ''; }
+            if (adjAddCheckAll) { adjAddCheckAll.checked = false; }
+            var urlDoc = '/dispatch/ops/delivery-docs?doc_customers_json=1&delivery_doc_no=' + encodeURIComponent(doc);
+            var p1 = fetch(urlDoc, { credentials: 'same-origin', headers: { 'Accept': 'application/json' } })
+                .then(function (r) { return r.text().then(function (t) { try { return JSON.parse(t); } catch (e) { return { ok: false, error: t || '响应无效' }; } }); });
+            var p2 = fetch('/dispatch/ops/delivery-docs?assign_pool_json=1', { credentials: 'same-origin', headers: { 'Accept': 'application/json' } })
+                .then(function (r) { return r.text().then(function (t) { try { return JSON.parse(t); } catch (e) { return { ok: false, error: t || '响应无效' }; } }); });
+            Promise.all([p1, p2]).then(function (results) {
+                if (adjLoading) { adjLoading.style.display = 'none'; }
+                var jDoc = results[0];
+                var jPool = results[1];
+                if (!jDoc || !jDoc.ok) {
+                    if (adjErr) {
+                        adjErr.style.display = 'block';
+                        adjErr.textContent = (jDoc && jDoc.error) ? jDoc.error : '加载本单客户失败';
+                    }
+                    return;
+                }
+                if (!jPool || !jPool.ok) {
+                    if (adjErr) {
+                        adjErr.style.display = 'block';
+                        adjErr.textContent = (jPool && jPool.error) ? jPool.error : '加载分配池失败';
+                    }
+                    return;
+                }
+                var bindRows = jDoc.bind_rows || [];
+                window.__ddAdjustBindRows = bindRows;
+                window.__ddAdjustPoolRows = jPool.rows || [];
+                if (adjRmTbody) {
+                    if (bindRows.length === 0) {
+                        adjRmTbody.innerHTML = '<tr><td colspan="5" class="muted">本单暂无可按客户 id 移除的绑定（若仅有编码匹配运单，请整单删除后重新生成）；仍可仅追加客户后排序。</td></tr>';
+                    } else {
+                        adjRmTbody.innerHTML = bindRows.map(function (row) {
+                            var id = parseInt(String(row.delivery_customer_id), 10) || 0;
+                            if (id <= 0) { return ''; }
+                            return '<tr>'
+                                + '<td>' + esc(row.customer_code) + '</td>'
+                                + '<td>' + wxLine(row) + '</td>'
+                                + '<td>' + esc(String(row.piece_count != null ? row.piece_count : '')) + '</td>'
+                                + '<td>' + routeText(row.route_primary, row.route_secondary) + '</td>'
+                                + '<td style="text-align:center;"><input type="checkbox" name="remove_delivery_customer_ids[]" value="' + id + '"></td>'
+                                + '</tr>';
+                        }).join('');
+                    }
+                }
+                var pool = jPool.rows || [];
+                if (adjAddTbody) {
+                    if (pool.length === 0) {
+                        adjAddTbody.innerHTML = '<tr><td colspan="6" class="muted">当前分配池暂无可追加客户</td></tr>';
+                    } else {
+                        adjAddTbody.innerHTML = pool.map(function (row) {
+                            var id = parseInt(String(row.id), 10) || 0;
+                            if (id <= 0) { return ''; }
+                            return '<tr>'
+                                + '<td>' + esc(row.customer_code) + '</td>'
+                                + '<td>' + wxLine(row) + '</td>'
+                                + '<td>' + esc(String(row.inbound_count != null ? row.inbound_count : '')) + '</td>'
+                                + '<td>' + esc(row.community_name_th || '—') + '</td>'
+                                + '<td>' + routeText(row.route_primary, row.route_secondary) + '</td>'
+                                + '<td style="text-align:center;"><input type="checkbox" name="add_delivery_customer_ids[]" value="' + id + '" class="dd-adjust-add-row"></td>'
+                                + '</tr>';
+                        }).join('');
+                    }
+                }
+                if (adjAddCheckAll) {
+                    adjAddCheckAll.onchange = function () {
+                        var on = !!adjAddCheckAll.checked;
+                        document.querySelectorAll('.dd-adjust-add-row').forEach(function (c) { c.checked = on; });
+                    };
+                }
+                if (adjForm) { adjForm.style.display = 'block'; }
+            }).catch(function () {
+                if (adjLoading) { adjLoading.style.display = 'none'; }
+                if (adjErr) {
+                    adjErr.style.display = 'block';
+                    adjErr.textContent = '网络错误';
+                }
+            });
         });
     });
 })();

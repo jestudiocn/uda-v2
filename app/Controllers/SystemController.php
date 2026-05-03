@@ -73,6 +73,38 @@ class SystemController
         return str_starts_with($permissionKey, 'menu.') || str_contains($permissionKey, '.page.');
     }
 
+    private function actionPermissionTabId(string $permissionKey, string $moduleKey): string
+    {
+        if (str_starts_with($permissionKey, 'finance.') || $moduleKey === 'finance') {
+            return 'finance';
+        }
+        if (str_starts_with($permissionKey, 'dispatch.') || $moduleKey === 'dispatch') {
+            return 'dispatch';
+        }
+        if (
+            str_starts_with($permissionKey, 'calendar.')
+            || str_starts_with($permissionKey, 'dashboard.')
+            || in_array($moduleKey, ['calendar', 'dashboard'], true)
+        ) {
+            return 'calendar';
+        }
+        if (str_starts_with($permissionKey, 'master.') || $moduleKey === 'master_data') {
+            return 'master';
+        }
+        if (str_starts_with($permissionKey, 'notifications.') || $moduleKey === 'notifications') {
+            return 'notifications';
+        }
+        if (
+            in_array($moduleKey, ['users', 'roles', 'system'], true)
+            || str_starts_with($permissionKey, 'users.')
+            || str_starts_with($permissionKey, 'roles.')
+            || str_starts_with($permissionKey, 'permissions.')
+        ) {
+            return 'users_roles';
+        }
+        return 'other';
+    }
+
     private function denyNoPermission(?string $messageKey = null): void
     {
         http_response_code(403);
@@ -661,23 +693,62 @@ class SystemController
             'notifications' => t('module.notifications'),
             'system' => t('module.system'),
             'other' => t('module.other'),
+            'menu_nav' => t('module.menu_nav'),
+            'dispatch' => t('module.dispatch'),
+            'finance' => t('module.finance'),
         ];
 
+        require_once __DIR__ . '/../Config/MenuPermissionCatalog.php';
+
+        $menuPermissionTree = [];
         $groupedPermissions = [];
-        foreach ($permissions as $permission) {
-            $key = (string)($permission['permission_key'] ?? '');
-            $isPage = $this->isPagePermissionKey($key);
-            if ($scope === 'page' && !$isPage) {
-                continue;
+        $actionTab = (string)($_GET['action_tab'] ?? '');
+        $actionTabIds = ['dispatch', 'finance', 'calendar', 'master', 'notifications', 'users_roles', 'other'];
+        if (!in_array($actionTab, $actionTabIds, true)) {
+            $actionTab = 'dispatch';
+        }
+        $actionTabCounts = array_fill_keys($actionTabIds, 0);
+        $actionTabLabels = [
+            'dispatch' => t('admin.permissions.action_tab.dispatch'),
+            'finance' => t('admin.permissions.action_tab.finance'),
+            'calendar' => t('admin.permissions.action_tab.calendar'),
+            'master' => t('admin.permissions.action_tab.master'),
+            'notifications' => t('admin.permissions.action_tab.notifications'),
+            'users_roles' => t('admin.permissions.action_tab.users_roles'),
+            'other' => t('admin.permissions.action_tab.other'),
+        ];
+
+        if ($scope === 'page') {
+            $keyMeta = [];
+            foreach ($permissions as $p) {
+                $k = (string)($p['permission_key'] ?? '');
+                if ($k === '') {
+                    continue;
+                }
+                $keyMeta[$k] = [
+                    'id' => (int)($p['id'] ?? 0),
+                    'permission_name' => (string)($p['permission_name'] ?? ''),
+                ];
             }
-            if ($scope === 'action' && $isPage) {
-                continue;
+            $menuPermissionTree = MenuPermissionCatalog::enrichTreeWithIds(MenuPermissionCatalog::tree(), $keyMeta);
+        } else {
+            foreach ($permissions as $permission) {
+                $key = (string)($permission['permission_key'] ?? '');
+                if ($this->isPagePermissionKey($key)) {
+                    continue;
+                }
+                $moduleKey = (string)($permission['module_key'] ?? 'other');
+                $tab = $this->actionPermissionTabId($key, $moduleKey);
+                if (!isset($actionTabCounts[$tab])) {
+                    $tab = 'other';
+                }
+                $actionTabCounts[$tab]++;
+                if ($tab === $actionTab) {
+                    $mk = $moduleKey !== '' ? $moduleKey : 'other';
+                    $groupedPermissions[$mk][] = $permission;
+                }
             }
-            $moduleKey = (string)($permission['module_key'] ?? 'other');
-            if ($moduleKey === '') {
-                $moduleKey = 'other';
-            }
-            $groupedPermissions[$moduleKey][] = $permission;
+            ksort($groupedPermissions);
         }
 
         $title = t('admin.title.permissions');

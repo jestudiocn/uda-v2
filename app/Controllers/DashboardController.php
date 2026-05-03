@@ -90,12 +90,17 @@ class DashboardController
         $items = [];
         while ($res && ($row = $res->fetch_assoc())) {
             $progress = max(0, min(100, (int)($row['progress_percent'] ?? 0)));
-            $statusLabel = $progress <= 0 ? '未处理' : ($progress >= 100 ? '待完成' : '待处理');
+            $statusLabel = $progress <= 0
+                ? t('dashboard.pending.calendar_status.unprocessed', '未处理')
+                : ($progress >= 100
+                    ? t('dashboard.pending.calendar_status.awaiting_done', '待完成')
+                    : t('dashboard.pending.calendar_status.in_progress', '待处理'));
             $row['progress_percent'] = $progress;
             $row['status_label'] = $statusLabel;
-            $row['event_type_label'] = ((string)($row['event_type'] ?? 'reminder')) === 'meeting'
-                ? '会议'
-                : (((string)($row['event_type'] ?? 'reminder')) === 'todo' ? '待办' : '提醒');
+            $et = (string)($row['event_type'] ?? 'reminder');
+            $row['event_type_label'] = $et === 'meeting'
+                ? t('calendar.type.meeting', '会议')
+                : ($et === 'todo' ? t('calendar.type.todo', '待办') : t('calendar.type.reminder', '提醒'));
             $items[] = $row;
         }
         $stmt->close();
@@ -133,14 +138,14 @@ class DashboardController
             $dueDate = (string)($row['end_date'] ?? '');
             $today = date('Y-m-d');
             $dueLevel = 'normal';
-            $statusLabel = '待处理';
+            $statusLabel = t('dashboard.pending.payables.pending', '待处理');
             if ($dueDate !== '' && preg_match('/^\d{4}-\d{2}-\d{2}$/', $dueDate)) {
                 if ($dueDate < $today) {
                     $dueLevel = 'overdue';
-                    $statusLabel = '已逾期';
+                    $statusLabel = t('dashboard.pending.payables.overdue', '已逾期');
                 } elseif ($dueDate === $today) {
                     $dueLevel = 'due_today';
-                    $statusLabel = '今天到期';
+                    $statusLabel = t('dashboard.pending.payables.due_today', '今天到期');
                 }
             }
             $items[] = [
@@ -150,11 +155,11 @@ class DashboardController
                 'end_date' => (string)($row['end_date'] ?? ''),
                 'progress_percent' => 0,
                 'status_label' => $statusLabel,
-                'event_type_label' => '待付款',
+                'event_type_label' => t('dashboard.pending.payables.type', '待付款'),
                 'creator' => (string)($row['creator'] ?? ''),
                 'assignees' => '',
                 'module_key' => 'payables',
-                'module_label' => '待付款',
+                'module_label' => t('dashboard.pending.payables.type', '待付款'),
                 'amount' => (float)($row['amount'] ?? 0),
                 'due_level' => $dueLevel,
             ];
@@ -194,14 +199,14 @@ class DashboardController
             $dueDate = (string)($row['end_date'] ?? '');
             $today = date('Y-m-d');
             $dueLevel = 'normal';
-            $statusLabel = '待处理';
+            $statusLabel = t('dashboard.pending.receivables.pending', '待处理');
             if ($dueDate !== '' && preg_match('/^\d{4}-\d{2}-\d{2}$/', $dueDate)) {
                 if ($dueDate < $today) {
                     $dueLevel = 'overdue';
-                    $statusLabel = '已逾期';
+                    $statusLabel = t('dashboard.pending.receivables.overdue', '已逾期');
                 } elseif ($dueDate === $today) {
                     $dueLevel = 'due_today';
-                    $statusLabel = '今天到期';
+                    $statusLabel = t('dashboard.pending.receivables.due_today', '今天到期');
                 }
             }
             $items[] = [
@@ -211,11 +216,11 @@ class DashboardController
                 'end_date' => (string)($row['end_date'] ?? ''),
                 'progress_percent' => 0,
                 'status_label' => $statusLabel,
-                'event_type_label' => '待收款',
+                'event_type_label' => t('dashboard.pending.receivables.type', '待收款'),
                 'creator' => (string)($row['creator'] ?? ''),
                 'assignees' => '',
                 'module_key' => 'receivables',
-                'module_label' => '待收款',
+                'module_label' => t('dashboard.pending.receivables.type', '待收款'),
                 'amount' => (float)($row['amount'] ?? 0),
                 'due_level' => $dueLevel,
             ];

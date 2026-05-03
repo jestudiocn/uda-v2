@@ -27,7 +27,13 @@ class ForwardingController
 
     private function requireDispatchMenu(): void
     {
-        if (!$this->hasAnyPermission(['menu.dispatch', 'menu.dashboard'])) {
+        require_once __DIR__ . '/../Config/MenuPermissionCatalog.php';
+        $navKeys = array_merge(
+            MenuPermissionCatalog::dispatchHubMenuNavKeys(),
+            MenuPermissionCatalog::udaMenuNavKeys(),
+            ['menu.nav.warehouse.root']
+        );
+        if (!$this->hasAnyPermission(array_merge(['menu.dispatch', 'menu.dashboard'], $navKeys))) {
             $this->denyNoPermission('无权限访问派送模块');
         }
     }
@@ -569,7 +575,7 @@ class ForwardingController
                 ');
                 if ($ins) {
                     $ins->bind_param(
-                        'ssssssssssi',
+                        'sssssssssi',
                         $payload['customer_code'],
                         $customerNameFallback,
                         $payload['wechat_line'],
@@ -797,7 +803,7 @@ class ForwardingController
     public function packages(): void
     {
         $this->requireDispatchMenu();
-        if (!$this->hasAnyPermission(['dispatch.forwarding.view', 'dispatch.forwarding.package.create', 'dispatch.manage'])) {
+        if (!$this->hasAnyPermission(['menu.nav.dispatch.forwarding.packages', 'dispatch.forwarding.view', 'dispatch.forwarding.package.create', 'dispatch.manage'])) {
             $this->denyNoPermission('无权限访问转发合包');
         }
         $canCreate = $this->hasAnyPermission(['dispatch.forwarding.package.create', 'dispatch.manage']);
@@ -1189,7 +1195,7 @@ class ForwardingController
     public function customers(): void
     {
         $this->requireDispatchMenu();
-        if (!$this->hasAnyPermission(['dispatch.forwarding.view', 'dispatch.forwarding.customer.manage', 'dispatch.manage'])) {
+        if (!$this->hasAnyPermission(['menu.nav.dispatch.forwarding.customers', 'dispatch.forwarding.view', 'dispatch.forwarding.customer.manage', 'dispatch.manage'])) {
             $this->denyNoPermission('无权限访问转发客户维护');
         }
         $canManage = $this->hasAnyPermission(['dispatch.forwarding.customer.manage', 'dispatch.manage']);
@@ -1369,7 +1375,7 @@ class ForwardingController
     public function records(): void
     {
         $this->requireDispatchMenu();
-        if (!$this->hasAnyPermission(['dispatch.forwarding.view', 'dispatch.manage'])) {
+        if (!$this->hasAnyPermission(['menu.nav.dispatch.forwarding.records', 'dispatch.forwarding.view', 'dispatch.manage'])) {
             $this->denyNoPermission('无权限访问转发查询记录');
         }
         $conn = require __DIR__ . '/../../config/database.php';
@@ -1531,7 +1537,7 @@ class ForwardingController
     public function forwardVoucherView(): void
     {
         $this->requireDispatchMenu();
-        if (!$this->hasAnyPermission(['dispatch.forwarding.view', 'dispatch.manage'])) {
+        if (!$this->hasAnyPermission(['menu.nav.dispatch.forwarding.packages', 'dispatch.forwarding.view', 'dispatch.manage'])) {
             $this->denyNoPermission('无权限查看转发凭证');
         }
         $id = (int)($_GET['id'] ?? 0);

@@ -13,12 +13,12 @@ $qDateTo = (string)($_GET['q_date_to'] ?? '');
 $qForwarded = (string)($_GET['q_forwarded'] ?? '');
 ?>
 <div class="card">
-    <h2 style="margin:0 0 6px 0;">UDA快件 / 快件查询</h2>
-    <div class="muted">对应 V1「记录列表」，列表风格比照派送订单查询。</div>
+    <h2 style="margin:0 0 6px 0;"><?php echo htmlspecialchars(t('uda.page.express_query.title', 'UDA快件 / 快件查询')); ?></h2>
+    <div class="muted"><?php echo htmlspecialchars(t('uda.page.express_query.subtitle', '对应 V1「记录列表」，列表风格比照派送订单查询。')); ?></div>
 </div>
 
 <?php if (!$schemaReady): ?>
-    <div class="card" style="border-left:4px solid #dc2626;">表 `express_uda` 不存在，无法查询。</div>
+    <div class="card" style="border-left:4px solid #dc2626;"><?php echo htmlspecialchars(t('uda.page.express_query.schema', '表 `express_uda` 不存在，无法查询。')); ?></div>
     <?php return; ?>
 <?php endif; ?>
 <?php if (($message ?? '') !== ''): ?><div class="card" style="border-left:4px solid #16a34a;"><?php echo htmlspecialchars((string)$message); ?></div><?php endif; ?>
@@ -26,33 +26,33 @@ $qForwarded = (string)($_GET['q_forwarded'] ?? '');
 
 <div class="card">
     <form method="get" style="display:grid;grid-template-columns:minmax(280px,2.2fr) minmax(180px,1.1fr) minmax(180px,1.1fr) minmax(160px,.9fr) auto;gap:10px;align-items:end;">
-        <div style="min-width:0;"><label>快递单号</label><input style="width:100%;" name="q_track" value="<?php echo htmlspecialchars($qTrack); ?>"></div>
-        <div style="min-width:0;"><label>开始日期（录入日期）</label><input style="width:100%;" type="date" name="q_date_from" value="<?php echo htmlspecialchars($qDateFrom); ?>"></div>
-        <div style="min-width:0;"><label>结束日期（录入日期）</label><input style="width:100%;" type="date" name="q_date_to" value="<?php echo htmlspecialchars($qDateTo); ?>"></div>
+        <div style="min-width:0;"><label><?php echo htmlspecialchars(t('uda.page.express_query.track', '快递单号')); ?></label><input style="width:100%;" name="q_track" value="<?php echo htmlspecialchars($qTrack); ?>"></div>
+        <div style="min-width:0;"><label><?php echo htmlspecialchars(t('uda.page.express_query.date_from', '开始日期（录入日期）')); ?></label><input style="width:100%;" type="date" name="q_date_from" value="<?php echo htmlspecialchars($qDateFrom); ?>"></div>
+        <div style="min-width:0;"><label><?php echo htmlspecialchars(t('uda.page.express_query.date_to', '结束日期（录入日期）')); ?></label><input style="width:100%;" type="date" name="q_date_to" value="<?php echo htmlspecialchars($qDateTo); ?>"></div>
         <div style="min-width:0;">
-            <label>是否再发出</label>
+            <label><?php echo htmlspecialchars(t('uda.page.express_query.forwarded', '是否再发出')); ?></label>
             <select style="width:100%;" name="q_forwarded">
-                <option value="">全部</option>
-                <option value="0" <?php echo $qForwarded === '0' ? 'selected' : ''; ?>>否</option>
-                <option value="1" <?php echo $qForwarded === '1' ? 'selected' : ''; ?>>是</option>
+                <option value=""><?php echo htmlspecialchars(t('uda.common.all', '全部')); ?></option>
+                <option value="0" <?php echo $qForwarded === '0' ? 'selected' : ''; ?>><?php echo htmlspecialchars(t('uda.common.no', '否')); ?></option>
+                <option value="1" <?php echo $qForwarded === '1' ? 'selected' : ''; ?>><?php echo htmlspecialchars(t('uda.common.yes', '是')); ?></option>
             </select>
         </div>
-        <div class="inline-actions" style="justify-content:flex-end;white-space:nowrap;"><button type="submit">查询</button><a class="btn" href="/uda/express/query">重置</a></div>
+        <div class="inline-actions" style="justify-content:flex-end;white-space:nowrap;"><button type="submit"><?php echo htmlspecialchars(t('uda.common.query', '查询')); ?></button><a class="btn" href="/uda/express/query"><?php echo htmlspecialchars(t('uda.common.reset', '重置')); ?></a></div>
     </form>
 </div>
 
 <div class="card">
-    <?php if ($total > 0): ?><div class="muted" style="margin-bottom:8px;">共 <?php echo (int)$total; ?> 条，第 <?php echo (int)$page; ?> / <?php echo (int)$totalPages; ?> 页</div><?php endif; ?>
+    <?php if ($total > 0): ?><div class="muted" style="margin-bottom:8px;"><?php echo htmlspecialchars(sprintf(t('uda.pagination.summary', '共 %d 条，第 %d / %d 页'), (int)$total, (int)$page, (int)$totalPages)); ?></div><?php endif; ?>
     <div style="overflow:auto;">
         <table class="data-table">
             <thead>
             <tr>
-                <th>快递单号</th><th>收件人</th><th>是否再发出</th><th>再发出时间</th><th>再发出单号</th><th>再发出收件人</th><th>再发出费用</th><th>备注</th><th>录入人</th><th>录入时间</th>
+                <th><?php echo htmlspecialchars(t('uda.page.express_query.col_track', '快递单号')); ?></th><th><?php echo htmlspecialchars(t('uda.page.express_query.col_receiver', '收件人')); ?></th><th><?php echo htmlspecialchars(t('uda.page.express_query.col_forwarded', '是否再发出')); ?></th><th><?php echo htmlspecialchars(t('uda.page.express_query.col_fwd_time', '再发出时间')); ?></th><th><?php echo htmlspecialchars(t('uda.page.express_query.col_fwd_track', '再发出单号')); ?></th><th><?php echo htmlspecialchars(t('uda.page.express_query.col_fwd_receiver', '再发出收件人')); ?></th><th><?php echo htmlspecialchars(t('uda.page.express_query.col_fwd_fee', '再发出费用')); ?></th><th><?php echo htmlspecialchars(t('uda.page.express_query.col_remark', '备注')); ?></th><th><?php echo htmlspecialchars(t('uda.page.express_query.col_creator', '录入人')); ?></th><th><?php echo htmlspecialchars(t('uda.page.express_query.col_created', '录入时间')); ?></th>
             </tr>
             </thead>
             <tbody>
             <?php if (empty($rows)): ?>
-                <tr><td colspan="10" class="muted">暂无数据</td></tr>
+                <tr><td colspan="10" class="muted"><?php echo htmlspecialchars(t('uda.common.no_data', '暂无数据')); ?></td></tr>
             <?php else: ?>
                 <?php foreach ($rows as $r): ?>
                     <?php $detail = [
@@ -70,7 +70,7 @@ $qForwarded = (string)($_GET['q_forwarded'] ?? '');
                     <tr>
                         <td class="cell-tip"><?php echo html_cell_tip_content((string)($r['tracking_no'] ?? '')); ?></td>
                         <td class="cell-tip"><?php echo html_cell_tip_content((string)($r['receiver_name'] ?? '')); ?></td>
-                        <td><?php echo (int)($r['is_forwarded'] ?? 0) === 1 ? '是' : '否'; ?></td>
+                        <td><?php echo (int)($r['is_forwarded'] ?? 0) === 1 ? htmlspecialchars(t('uda.common.yes', '是')) : htmlspecialchars(t('uda.common.no', '否')); ?></td>
                         <td class="cell-tip"><?php echo html_cell_tip_content((string)($r['forward_time'] ?? '')); ?></td>
                         <td class="cell-tip"><?php echo html_cell_tip_content((string)($r['forward_tracking_no'] ?? '')); ?></td>
                         <td class="cell-tip"><?php echo html_cell_tip_content((string)($r['forward_receiver'] ?? '')); ?></td>
@@ -83,9 +83,9 @@ $qForwarded = (string)($_GET['q_forwarded'] ?? '');
                                 <form method="post" style="margin:0;">
                                     <input type="hidden" name="action" value="forward_row">
                                     <input type="hidden" name="id" value="<?php echo (int)($r['id'] ?? 0); ?>">
-                                    <button type="submit" style="padding:2px 8px;min-height:auto;">转</button>
+                                    <button type="submit" style="padding:2px 8px;min-height:auto;"><?php echo htmlspecialchars(t('uda.common.forward', '转')); ?></button>
                                 </form>
-                                <button type="button" class="btn express-edit-btn" data-detail="<?php echo htmlspecialchars(json_encode($detail, JSON_UNESCAPED_UNICODE), ENT_QUOTES, 'UTF-8'); ?>" style="padding:2px 8px;min-height:auto;">改</button>
+                                <button type="button" class="btn express-edit-btn" data-detail="<?php echo htmlspecialchars(json_encode($detail, JSON_UNESCAPED_UNICODE), ENT_QUOTES, 'UTF-8'); ?>" style="padding:2px 8px;min-height:auto;"><?php echo htmlspecialchars(t('uda.common.edit', '改')); ?></button>
                             </span>
                         </td>
                     </tr>
@@ -97,8 +97,8 @@ $qForwarded = (string)($_GET['q_forwarded'] ?? '');
     <?php if ($totalPages > 1): ?>
         <?php $base = $_GET; ?>
         <div style="margin-top:10px;display:flex;gap:8px;">
-            <?php if ($page > 1): $prev = $base; $prev['page']=(string)($page-1); ?><a class="btn" href="/uda/express/query?<?php echo htmlspecialchars(http_build_query($prev)); ?>">上一页</a><?php endif; ?>
-            <?php if ($page < $totalPages): $next = $base; $next['page']=(string)($page+1); ?><a class="btn" href="/uda/express/query?<?php echo htmlspecialchars(http_build_query($next)); ?>">下一页</a><?php endif; ?>
+            <?php if ($page > 1): $prev = $base; $prev['page']=(string)($page-1); ?><a class="btn" href="/uda/express/query?<?php echo htmlspecialchars(http_build_query($prev)); ?>"><?php echo htmlspecialchars(t('uda.common.prev', '上一页')); ?></a><?php endif; ?>
+            <?php if ($page < $totalPages): $next = $base; $next['page']=(string)($page+1); ?><a class="btn" href="/uda/express/query?<?php echo htmlspecialchars(http_build_query($next)); ?>"><?php echo htmlspecialchars(t('uda.common.next', '下一页')); ?></a><?php endif; ?>
         </div>
     <?php endif; ?>
 </div>
@@ -106,14 +106,14 @@ $qForwarded = (string)($_GET['q_forwarded'] ?? '');
 <div id="expressEditModal" style="display:none;position:fixed;inset:0;background:rgba(0,0,0,.35);z-index:9999;align-items:center;justify-content:center;padding:12px;">
     <div style="position:relative;max-width:900px;width:100%;max-height:92vh;overflow:auto;background:#fff;border-radius:12px;padding:16px 18px;box-shadow:0 10px 28px rgba(0,0,0,.2);">
         <button type="button" id="expressEditCloseX" style="position:absolute;top:10px;right:12px;border:none;background:transparent;font-size:26px;line-height:1;color:#64748b;cursor:pointer;">×</button>
-        <h3 style="margin:0 0 10px 0;">快件资料修改</h3>
+        <h3 style="margin:0 0 10px 0;"><?php echo htmlspecialchars(t('uda.page.express_query.modal_title', '快件资料修改')); ?></h3>
         <form method="post" class="form-grid" style="grid-template-columns:160px 1fr;gap:10px;">
             <input type="hidden" name="action" value="edit_row">
             <input type="hidden" name="id" id="ee_id" value="">
-            <label>快递单号</label><input name="tracking_no" id="ee_tracking_no" required>
-            <label>收件人</label><input name="receiver_name" id="ee_receiver_name">
-            <label>备注</label><textarea name="remark" id="ee_remark" rows="2"></textarea>
-            <div class="form-full inline-actions"><button type="submit">保存修改</button></div>
+            <label><?php echo htmlspecialchars(t('uda.page.express_query.track', '快递单号')); ?></label><input name="tracking_no" id="ee_tracking_no" required>
+            <label><?php echo htmlspecialchars(t('uda.page.express_query.col_receiver', '收件人')); ?></label><input name="receiver_name" id="ee_receiver_name">
+            <label><?php echo htmlspecialchars(t('uda.page.express_query.col_remark', '备注')); ?></label><textarea name="remark" id="ee_remark" rows="2"></textarea>
+            <div class="form-full inline-actions"><button type="submit"><?php echo htmlspecialchars(t('uda.common.save_changes', '保存修改')); ?></button></div>
         </form>
     </div>
 </div>

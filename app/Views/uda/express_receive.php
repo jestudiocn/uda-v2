@@ -4,12 +4,12 @@
 /** @var string $error */
 ?>
 <div class="card">
-    <h2 style="margin:0 0 6px 0;">UDA快件 / 快件录入</h2>
-    <div class="muted">对应 V1「收件登记」。</div>
+    <h2 style="margin:0 0 6px 0;"><?php echo htmlspecialchars(t('uda.page.express_receive.title', 'UDA快件 / 快件录入')); ?></h2>
+    <div class="muted"><?php echo htmlspecialchars(t('uda.page.express_receive.subtitle', '对应 V1「收件登记」。')); ?></div>
 </div>
 
 <?php if (!$schemaReady): ?>
-    <div class="card" style="border-left:4px solid #dc2626;">表 `express_uda` 不存在，无法使用该功能。</div>
+    <div class="card" style="border-left:4px solid #dc2626;"><?php echo htmlspecialchars(t('uda.page.express_receive.schema', '表 `express_uda` 不存在，无法使用该功能。')); ?></div>
     <?php return; ?>
 <?php endif; ?>
 
@@ -20,23 +20,23 @@
     <form method="post" class="form-grid" style="grid-template-columns:repeat(2,minmax(260px,1fr));gap:12px;">
         <input type="hidden" name="uda_receive_submit" value="1">
         <div>
-            <label>收到时间</label>
+            <label><?php echo htmlspecialchars(t('uda.page.express_receive.receive_time', '收到时间')); ?></label>
             <input type="datetime-local" id="uda_receive_time" name="receive_time" step="1" required>
         </div>
         <div>
-            <label>快递单号</label>
-            <input type="text" name="tracking_no" id="uda_tracking_no" placeholder="支持扫码，自动去掉@后缀" required autocomplete="off">
+            <label><?php echo htmlspecialchars(t('uda.page.express_receive.tracking_no', '快递单号')); ?></label>
+            <input type="text" name="tracking_no" id="uda_tracking_no" placeholder="<?php echo htmlspecialchars(t('uda.page.express_receive.tracking_placeholder', '支持扫码，自动去掉@后缀')); ?>" required autocomplete="off">
         </div>
         <div>
-            <label>收件人</label>
-            <input type="text" name="receiver_name" placeholder="选填">
+            <label><?php echo htmlspecialchars(t('uda.page.express_receive.receiver', '收件人')); ?></label>
+            <input type="text" name="receiver_name" placeholder="<?php echo htmlspecialchars(t('uda.common.optional', '选填')); ?>">
         </div>
         <div class="form-full">
-            <label>备注</label>
-            <textarea name="remark" rows="4" placeholder="选填"></textarea>
+            <label><?php echo htmlspecialchars(t('uda.page.express_receive.remark', '备注')); ?></label>
+            <textarea name="remark" rows="4" placeholder="<?php echo htmlspecialchars(t('uda.common.optional', '选填')); ?>"></textarea>
         </div>
         <div class="form-full inline-actions">
-            <button type="submit">保存记录</button>
+            <button type="submit"><?php echo htmlspecialchars(t('uda.common.save_record', '保存记录')); ?></button>
         </div>
     </form>
 </div>

@@ -6,6 +6,7 @@
 /** @var string $error */
 /** @var bool $canEdit */
 /** @var bool $hideConsigningSelectors */
+/** @var bool $hideConsigningFilterAndColumn 绑定账号或全站仅一个启用委托客户时隐藏委托客户筛选与列表列 */
 /** @var bool $dispatchBoundClientMissing */
 /** @var list<string> $deliveryCustomerStateCatalog */
 /** @var bool $deliveryCustomerSchemaV2 */
@@ -38,6 +39,7 @@ $deliveryCustomerSchemaV3 = $deliveryCustomerSchemaV3 ?? false;
 $migrationHintV3 = $migrationHintV3 ?? '';
 $showOpsCol = !$dispatchBoundClientMissing;
 $hideConsigningSelectors = $hideConsigningSelectors ?? false;
+$hideConsigningFilterAndColumn = $hideConsigningFilterAndColumn ?? false;
 $dispatchBoundClientMissing = $dispatchBoundClientMissing ?? false;
 $deliveryCustomerStateCatalog = $deliveryCustomerStateCatalog ?? ['正常', '异常', '暂停', '转发'];
 $deliveryCustomerSchemaV2 = $deliveryCustomerSchemaV2 ?? false;
@@ -59,7 +61,7 @@ $hasActiveDeliverySearch = $dqCustomerCode !== '' || $dqWechat !== '' || $dqRout
     || ($deliveryCustomerSchemaV2 && $dqCustomerState !== '')
     || ($deliveryCustomerHasGeoProfile && ($dqGeoStatus !== '' || $dqAddrTh !== '' || $dqAmphoe !== ''));
 $listParams = [];
-if (!$hideConsigningSelectors) {
+if (!$hideConsigningFilterAndColumn) {
     $listParams['consigning_client_id'] = (string)(int)$filterCcId;
 }
 foreach (
@@ -91,8 +93,10 @@ $quickMissingGeoUrl = '/dispatch/delivery-customers?' . http_build_query($quickM
     <h2 style="margin:0 0 6px 0;">派送业务 / 派送客户</h2>
     <?php if ($hideConsigningSelectors): ?>
         <div class="muted">当前为<strong>委托客户绑定账号</strong>，仅显示与管理该委托客户下的派送客户（与「订单查询」范围一致），不再提供委托客户切换。</div>
+    <?php elseif ($hideConsigningFilterAndColumn): ?>
+        <div class="muted">当前启用中的<strong>委托客户仅有一个</strong>，已自动限定在该客户，不再展示委托客户筛选与列表中的委托客户列。支持 <strong>.xlsx / .xls</strong> 与 <strong>.csv</strong> 批量导入（推荐 Excel 模板）；单笔新增已关闭。</div>
     <?php else: ?>
-        <div class="muted">末端收件人主数据；「派送客户编号」与货件中的编号对应。上方筛选默认<strong>全部</strong>时可跨委托客户浏览列表（表格会显示所属委托客户）。仅支持 CSV 批量导入；单笔新增已关闭。</div>
+        <div class="muted">末端收件人主数据；「派送客户编号」与货件中的编号对应。上方筛选默认<strong>全部</strong>时可跨委托客户浏览列表（表格会显示所属委托客户）。支持 <strong>.xlsx / .xls</strong> 与 <strong>.csv</strong> 批量导入（推荐 Excel 模板）；单笔新增已关闭。</div>
     <?php endif; ?>
 </div>
 <?php if (!$deliveryCustomerSchemaV2): ?>
@@ -113,7 +117,7 @@ $quickMissingGeoUrl = '/dispatch/delivery-customers?' . http_build_query($quickM
 <?php if (!empty($importFailureDetails)): ?>
 <div class="card" style="border-left:4px solid #ea580c;">
     <h3 style="margin:0 0 8px 0;font-size:15px;">本次导入失败明细</h3>
-    <p class="muted" style="margin:0 0 10px 0;font-size:13px;">「行号」为 CSV 中的行序（第 1 行为表头，第 2 行起为数据）。请按原因修正后重新上传；表头可与模板不完全一致，但须能被系统识别（见首列失败原因提示）。</p>
+    <p class="muted" style="margin:0 0 10px 0;font-size:13px;">「行号」为文件中的行序（第 1 行为表头，第 2 行起为数据；Excel 与 CSV 相同）。请按原因修正后重新上传；表头可与模板不完全一致，但须能被系统识别（见首列失败原因提示）。</p>
     <div style="overflow:auto;max-height:min(360px,50vh);border:1px solid #e5e7eb;border-radius:6px;">
         <table style="width:100%;border-collapse:collapse;font-size:14px;">
             <thead>
@@ -141,7 +145,7 @@ $quickMissingGeoUrl = '/dispatch/delivery-customers?' . http_build_query($quickM
 <div class="card">
     <div class="muted">当前绑定委托客户：<strong><?php echo htmlspecialchars(trim((string)($consigningOptions[0]['client_code'] ?? '') . ' — ' . (string)($consigningOptions[0]['client_name'] ?? ''))); ?></strong></div>
 </div>
-<?php elseif (!$hideConsigningSelectors && !empty($consigningOptions)): ?>
+<?php elseif (!$hideConsigningFilterAndColumn && !empty($consigningOptions)): ?>
 <div class="card">
     <form method="get" class="form-grid" style="grid-template-columns: 160px 1fr auto;align-items:end;">
         <input type="hidden" name="per_page" value="<?php echo (int)$perPage; ?>" style="display:none" aria-hidden="true">
@@ -158,27 +162,27 @@ $quickMissingGeoUrl = '/dispatch/delivery-customers?' . http_build_query($quickM
         <button type="submit">筛选</button>
     </form>
 </div>
-<?php elseif (!$hideConsigningSelectors && empty($consigningOptions)): ?>
+<?php elseif (!$hideConsigningFilterAndColumn && empty($consigningOptions)): ?>
 <div class="card"><div class="muted">尚无启用中的委托客户，请先在「委托客户」中维护。</div></div>
 <?php endif; ?>
 
 <?php
 $exportTplQuery = ['export' => 'delivery_csv_template'];
-if (!$hideConsigningSelectors && (int)$filterCcId > 0) {
+if (!$hideConsigningFilterAndColumn && (int)$filterCcId > 0) {
     $exportTplQuery['consigning_client_id'] = (string)(int)$filterCcId;
 }
 $exportTplUrl = '/dispatch/delivery-customers?' . http_build_query($exportTplQuery);
 ?>
 <?php if ($canEdit && !$dispatchBoundClientMissing && !empty($consigningOptions)): ?>
 <div class="card">
-    <h3 style="margin:0 0 10px 0;">批量导入派送客户（CSV）</h3>
-    <p class="muted" style="margin:0 0 10px 0;font-size:13px;">同一委托客户下，若 CSV 中的「派送客户编号」与已有资料相同，将<strong>整行覆盖</strong>更新（含收件人、电话、地址相关栏位等）。</p>
+    <h3 style="margin:0 0 10px 0;">批量导入派送客户（Excel / CSV）</h3>
+    <p class="muted" style="margin:0 0 10px 0;font-size:13px;">同一委托客户下，若文件中的「派送客户编号」与已有资料相同，将<strong>整行覆盖</strong>更新（含收件人、电话、地址相关栏位等）。下载模板：服务器已安装 PhpSpreadsheet 时为 <strong>.xlsx</strong>，否则为 <strong>.csv</strong>。</p>
     <form method="post" enctype="multipart/form-data" action="/dispatch/delivery-customers<?php echo htmlspecialchars($deliveryCustomersListQuery, ENT_QUOTES, 'UTF-8'); ?>" style="display:flex;flex-wrap:wrap;gap:12px;align-items:center;">
         <input type="hidden" name="csv_consigning_client_id" value="<?php echo (int)$filterCcId; ?>">
         <a class="btn" href="<?php echo htmlspecialchars($exportTplUrl, ENT_QUOTES, 'UTF-8'); ?>">下载导入模板</a>
-        <label for="delivery_csv" style="margin:0;">选择 CSV 文件</label>
-        <input id="delivery_csv" name="delivery_csv" type="file" accept=".csv,text/csv" style="max-width:min(360px,100%);">
-        <button type="submit" name="import_delivery_csv" value="1">上传导入</button>
+        <label for="delivery_import_file" style="margin:0;">选择文件</label>
+        <input id="delivery_import_file" name="delivery_import_file" type="file" accept=".xlsx,.xls,.csv,application/vnd.openxmlformats-officedocument.spreadsheetml.sheet,application/vnd.ms-excel,text/csv" style="max-width:min(360px,100%);">
+        <button type="submit" name="import_delivery_customers" value="1">上传导入</button>
     </form>
 </div>
 <?php endif; ?>
@@ -187,7 +191,7 @@ $exportTplUrl = '/dispatch/delivery-customers?' . http_build_query($exportTplQue
 <div class="card">
     <h3 style="margin:0 0 10px 0;font-size:15px;">搜索派送客户</h3>
     <form method="get" action="/dispatch/delivery-customers" style="display:flex;flex-wrap:wrap;gap:12px;align-items:flex-end;">
-        <?php if (!$hideConsigningSelectors): ?>
+        <?php if (!$hideConsigningFilterAndColumn): ?>
             <input type="hidden" name="consigning_client_id" value="<?php echo (int)$filterCcId; ?>">
         <?php endif; ?>
         <input type="hidden" name="page" value="1" style="display:none" aria-hidden="true">
@@ -246,7 +250,7 @@ $exportTplUrl = '/dispatch/delivery-customers?' . http_build_query($exportTplQue
         <?php if ($hasActiveDeliverySearch): ?>
             <?php
             $clearQs = [];
-            if (!$hideConsigningSelectors) {
+            if (!$hideConsigningFilterAndColumn) {
                 $clearQs['consigning_client_id'] = (string)(int)$filterCcId;
             }
             $clearUrl = '/dispatch/delivery-customers' . ($clearQs === [] ? '' : ('?' . http_build_query($clearQs)));
@@ -265,15 +269,13 @@ $exportTplUrl = '/dispatch/delivery-customers?' . http_build_query($exportTplQue
         <table class="data-table table-valign-middle">
             <thead>
                 <tr>
-                    <?php if (!$hideConsigningSelectors): ?>
+                    <?php if (!$hideConsigningFilterAndColumn): ?>
                     <th>委托客户</th>
                     <?php endif; ?>
                     <th>派送客户编号</th>
                     <th>微信 / Line</th>
                     <th>电话</th>
-                    <th>地址摘要</th>
                     <?php if ($deliveryCustomerHasGeoProfile): ?>
-                    <th>完整泰文地址</th>
                     <th>完整英文地址</th>
                     <?php endif; ?>
                     <th>定位</th>
@@ -291,7 +293,7 @@ $exportTplUrl = '/dispatch/delivery-customers?' . http_build_query($exportTplQue
             </thead>
             <tbody>
             <?php
-            $colspan = 9 + ($deliveryCustomerHasGeoProfile ? 3 : 0) + ($showOpsCol ? 1 : 0) + ($hideConsigningSelectors ? 0 : 1);
+            $colspan = 8 + ($deliveryCustomerHasGeoProfile ? 2 : 0) + ($showOpsCol ? 1 : 0) + ($hideConsigningFilterAndColumn ? 0 : 1);
             ?>
             <?php if ($dispatchBoundClientMissing): ?>
                 <tr><td colspan="<?php echo (int)$colspan; ?>" class="muted">绑定无效，无法加载派送客户列表</td></tr>
@@ -308,18 +310,6 @@ $exportTplUrl = '/dispatch/delivery-customers?' . http_build_query($exportTplQue
                     $ln = trim((string)($r['line_id'] ?? ''));
                     $phone = trim((string)($r['phone'] ?? ''));
                     $wxLine = $wx === '' ? $ln : ($ln === '' ? $wx : $wx . ' / ' . $ln);
-                    $addrThList = trim((string)($r['addr_th_full'] ?? ''));
-                    $addrBits = $addrThList !== '' ? $addrThList : trim(implode(' ', array_filter([
-                        trim((string)($r['addr_house_no'] ?? '')),
-                        trim((string)($r['addr_road_soi'] ?? '')),
-                        trim((string)($r['addr_moo_village'] ?? '')),
-                        trim((string)($r['addr_tambon'] ?? '')),
-                        trim((string)($r['addr_amphoe'] ?? '')),
-                        trim((string)($r['addr_province'] ?? '')),
-                        trim((string)($r['addr_zipcode'] ?? '')),
- ], static function ($v) {
-                        return $v !== '';
-                    })));
                     $rp = trim((string)($r['route_primary'] ?? ''));
                     $rs = trim((string)($r['route_secondary'] ?? ''));
                     $rcDb = trim((string)($r['routes_combined'] ?? ''));
@@ -381,15 +371,13 @@ $exportTplUrl = '/dispatch/delivery-customers?' . http_build_query($exportTplQue
                     ];
                     ?>
                     <tr>
-                        <?php if (!$hideConsigningSelectors): ?>
+                        <?php if (!$hideConsigningFilterAndColumn): ?>
                         <td class="cell-tip"><?php echo html_cell_tip_content(trim((string)($r['client_code'] ?? '') . ' — ' . (string)($r['client_name'] ?? ''))); ?></td>
                         <?php endif; ?>
                         <td><?php echo htmlspecialchars((string)($r['customer_code'] ?? '')); ?></td>
                         <td class="cell-tip"><?php echo html_cell_tip_content($wxLine); ?></td>
                         <td class="cell-tip"><?php echo html_cell_tip_content($phone !== '' ? $phone : ''); ?></td>
-                        <td class="cell-tip"><?php echo html_cell_tip_content($addrBits); ?></td>
                         <?php if ($deliveryCustomerHasGeoProfile): ?>
-                        <td class="cell-tip"><?php echo html_cell_tip_content(trim((string)($r['addr_th_full'] ?? ''))); ?></td>
                         <td class="cell-tip"><?php echo html_cell_tip_content(trim((string)($r['addr_en_full'] ?? ''))); ?></td>
                         <?php endif; ?>
                         <td><?php
@@ -1022,12 +1010,23 @@ $exportTplUrl = '/dispatch/delivery-customers?' . http_build_query($exportTplQue
             fd.append('delivery_id', sel.getAttribute('data-delivery-id') || '');
             fd.append('customer_state', sel.value);
             fetch(listPath, { method: 'POST', body: fd, credentials: 'same-origin' })
-                .then(function (r) { return r.json(); })
+                .then(function (r) {
+                    return r.text().then(function (text) {
+                        var t = (text || '').replace(/^\uFEFF/, '').trim();
+                        try {
+                            return JSON.parse(t);
+                        } catch (e) {
+                            throw new Error('bad_json');
+                        }
+                    });
+                })
                 .then(function (j) {
                     if (!j || !j.ok) {
                         alert((j && j.error) ? j.error : '更新失败');
                         window.location.reload();
+                        return;
                     }
+                    window.location.reload();
                 })
                 .catch(function () {
                     alert('网络错误');

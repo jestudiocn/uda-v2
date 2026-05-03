@@ -10,16 +10,20 @@ if (!in_array($__htmlLang, ['zh-CN', 'th-TH'], true)) {
 <html lang="<?php echo htmlspecialchars($__htmlLang); ?>">
 <head>
     <meta charset="utf-8">
-    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
     <title>UDA-V2 内部管理系统</title>
     <style>
         * { box-sizing: border-box; }
+        html {
+            min-width: 360px;
+        }
         body {
             margin: 0;
             font-family: Arial, "Microsoft YaHei", "SimHei", sans-serif;
             background: #f4f6fb;
             color: #111827;
             font-size: 14px;
+            padding-bottom: env(safe-area-inset-bottom, 0px);
         }
         .auth-topbar {
             height: 54px;
@@ -27,7 +31,7 @@ if (!in_array($__htmlLang, ['zh-CN', 'th-TH'], true)) {
             display: flex;
             align-items: center;
             justify-content: space-between;
-            padding: 0 14px;
+            padding: 0 max(14px, env(safe-area-inset-right, 0px)) 0 max(14px, env(safe-area-inset-left, 0px));
             border-bottom: 1px solid rgba(0,0,0,0.08);
             position: fixed;
             top: 0;
@@ -66,7 +70,7 @@ if (!in_array($__htmlLang, ['zh-CN', 'th-TH'], true)) {
         .wrap {
             max-width: 460px;
             margin: 0 auto;
-            padding: 72px 12px 24px;
+            padding: 72px max(12px, env(safe-area-inset-left, 0px)) 24px max(12px, env(safe-area-inset-right, 0px));
         }
         .card {
             background: #fff;

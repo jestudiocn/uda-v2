@@ -1,5 +1,10 @@
 <?php
 
+$composerAutoload = __DIR__ . '/../vendor/autoload.php';
+if (is_file($composerAutoload)) {
+    require_once $composerAutoload;
+}
+
 require_once __DIR__ . '/env.php';
 loadEnv(__DIR__ . '/../.env');
 if (session_status() === PHP_SESSION_NONE) {
@@ -13,12 +18,47 @@ if (!isset($_SESSION['app_locale']) || !in_array((string)$_SESSION['app_locale']
 $appLocale = (string)$_SESSION['app_locale'];
 $langFile = __DIR__ . '/../lang/' . $appLocale . '.php';
 $translations = file_exists($langFile) ? (array)require $langFile : [];
+$udaLocaleFile = __DIR__ . '/../lang/uda-' . $appLocale . '.php';
+if (is_file($udaLocaleFile)) {
+    $translations = array_merge($translations, (array)require $udaLocaleFile);
+}
+$dispatchLocaleFile = __DIR__ . '/../lang/dispatch-' . $appLocale . '.php';
+if (is_file($dispatchLocaleFile)) {
+    $translations = array_merge($translations, (array)require $dispatchLocaleFile);
+}
+$dispatchViewsFile = __DIR__ . '/../lang/dispatch-views-' . $appLocale . '.php';
+if (is_file($dispatchViewsFile)) {
+    $translations = array_merge($translations, (array)require $dispatchViewsFile);
+}
+/** @var array<string, string> 非 zh-CN 时用于 t() 缺键回退（未单独翻译的页面仍显示中文） */
+$translationFallbackZh = [];
+if ($appLocale !== 'zh-CN') {
+    $fbZh = __DIR__ . '/../lang/zh-CN.php';
+    if (is_file($fbZh)) {
+        $translationFallbackZh = (array)require $fbZh;
+    }
+    $udaZh = __DIR__ . '/../lang/uda-zh-CN.php';
+    if (is_file($udaZh)) {
+        $translationFallbackZh = array_merge($translationFallbackZh, (array)require $udaZh);
+    }
+    $dispatchZh = __DIR__ . '/../lang/dispatch-zh-CN.php';
+    if (is_file($dispatchZh)) {
+        $translationFallbackZh = array_merge($translationFallbackZh, (array)require $dispatchZh);
+    }
+    $dispatchViewsZh = __DIR__ . '/../lang/dispatch-views-zh-CN.php';
+    if (is_file($dispatchViewsZh)) {
+        $translationFallbackZh = array_merge($translationFallbackZh, (array)require $dispatchViewsZh);
+    }
+}
 if (!function_exists('t')) {
     function t(string $key, ?string $fallback = null): string
     {
-        global $translations;
+        global $translations, $translationFallbackZh;
         if (isset($translations[$key])) {
             return (string)$translations[$key];
+        }
+        if ($translationFallbackZh !== [] && isset($translationFallbackZh[$key])) {
+            return (string)$translationFallbackZh[$key];
         }
         return $fallback ?? $key;
     }
@@ -82,6 +122,8 @@ $publicRoutes = [
     '/dispatch/arrival-label-pdf',
     '/dispatch/arrival-label-html',
     '/dispatch/driver/run',
+    '/dispatch/driver/segment-maps',
+    '/dispatch/driver/pod-precheck',
     '/dispatch/driver/pod-upload',
 ];
 $forceRoutes = ['/force-profile', '/force-profile.php', '/logout'];
@@ -230,6 +272,7 @@ if ($isLoggedIn) {
         '/finance/ar/invoices/print-unpaid' => ['menu.finance', 'menu.dashboard'],
         '/finance/ar/ledger' => ['menu.finance', 'menu.dashboard'],
         '/dispatch' => ['menu.dispatch', 'menu.dashboard'],
+        '/dispatch/delivery-pod-photo' => ['menu.dispatch', 'menu.dashboard'],
         '/dispatch/order-import' => ['menu.dispatch', 'menu.dashboard'],
         '/dispatch/package-ops' => ['menu.dispatch', 'menu.dashboard'],
         '/dispatch/forwarding/packages' => ['menu.dispatch', 'menu.dashboard'],
@@ -244,6 +287,10 @@ if ($isLoggedIn) {
         '/dispatch/ops/binding-list' => ['menu.dispatch', 'menu.dashboard'],
         '/dispatch/ops/create-delivery' => ['menu.dispatch', 'menu.dashboard'],
         '/dispatch/ops/delivery-docs' => ['menu.dispatch', 'menu.dashboard'],
+        '/dispatch/ops/formal-delivery-docs' => ['menu.dispatch', 'menu.dashboard'],
+        '/dispatch/ops/delivery-pick-sheets' => ['menu.dispatch', 'menu.dashboard'],
+        '/dispatch/ops/driver-deliveries' => ['menu.dispatch', 'menu.dashboard'],
+        '/dispatch/driver/my-deliveries' => ['menu.dispatch', 'menu.dashboard'],
         '/dispatch/accounting/list' => ['menu.dispatch', 'menu.dashboard'],
         '/uda/issues/list' => ['menu.dispatch', 'menu.dashboard'],
         '/uda/issues/create' => ['menu.dispatch', 'menu.dashboard'],
@@ -259,6 +306,7 @@ if ($isLoggedIn) {
         '/uda/batches/create' => ['menu.dispatch', 'menu.dashboard'],
         '/uda/batches/waybill-check' => ['menu.dispatch', 'menu.dashboard'],
         '/uda/batches/edit' => ['menu.dispatch', 'menu.dashboard'],
+        '/uda/batches/packing-list-export' => ['menu.dispatch', 'menu.dashboard'],
         '/uda/warehouse/bundles' => ['menu.dispatch', 'menu.dashboard'],
         '/uda/warehouse/create-bundle' => ['menu.dispatch', 'menu.dashboard'],
         '/uda/warehouse/batch-view' => ['menu.dispatch', 'menu.dashboard'],
@@ -277,6 +325,14 @@ if ($isLoggedIn) {
         '/system/logs' => ['menu.logs', 'menu.roles'], // 兼容旧权限
     ];
 
+    require_once __DIR__ . '/../app/Config/RouteMenuNavMap.php';
+    foreach ($routeRequiredPermission as $path => $reqList) {
+        $extra = RouteMenuNavMap::menuNavKeysForUri($path);
+        if ($extra !== []) {
+            $routeRequiredPermission[$path] = array_values(array_unique(array_merge((array)$reqList, $extra)));
+        }
+    }
+
     if (isset($routeRequiredPermission[$uri])) {
         $required = (array)$routeRequiredPermission[$uri];
         if (!hasAnyPermissionKey($required)) {
@@ -289,6 +345,7 @@ if ($isLoggedIn) {
                     '/finance/ar/charges/list' => ['menu.finance', 'menu.dashboard'],
                     '/finance/ar/billing-schemes' => ['menu.finance', 'menu.dashboard'],
                     '/dispatch' => ['menu.dispatch', 'menu.dashboard'],
+                    '/dispatch/delivery-pod-photo' => ['menu.dispatch', 'menu.dashboard'],
                     '/dispatch/order-import' => ['menu.dispatch', 'menu.dashboard'],
                     '/dispatch/package-ops' => ['menu.dispatch', 'menu.dashboard'],
                     '/dispatch/forwarding/packages' => ['menu.dispatch', 'menu.dashboard'],
@@ -297,6 +354,10 @@ if ($isLoggedIn) {
                     '/dispatch/ops/binding-list' => ['menu.dispatch', 'menu.dashboard'],
                     '/dispatch/ops/create-delivery' => ['menu.dispatch', 'menu.dashboard'],
                     '/dispatch/ops/delivery-docs' => ['menu.dispatch', 'menu.dashboard'],
+                    '/dispatch/ops/formal-delivery-docs' => ['menu.dispatch', 'menu.dashboard'],
+                    '/dispatch/ops/delivery-pick-sheets' => ['menu.dispatch', 'menu.dashboard'],
+                    '/dispatch/ops/driver-deliveries' => ['menu.dispatch', 'menu.dashboard'],
+                    '/dispatch/driver/my-deliveries' => ['menu.dispatch', 'menu.dashboard'],
                     '/dispatch/accounting/list' => ['menu.dispatch', 'menu.dashboard'],
                     '/uda/issues/list' => ['menu.dispatch', 'menu.dashboard'],
                     '/uda/issues/create' => ['menu.dispatch', 'menu.dashboard'],
@@ -312,6 +373,7 @@ if ($isLoggedIn) {
                     '/uda/batches/create' => ['menu.dispatch', 'menu.dashboard'],
                     '/uda/batches/waybill-check' => ['menu.dispatch', 'menu.dashboard'],
                     '/uda/batches/edit' => ['menu.dispatch', 'menu.dashboard'],
+                    '/uda/batches/packing-list-export' => ['menu.dispatch', 'menu.dashboard'],
                     '/uda/warehouse/bundles' => ['menu.dispatch', 'menu.dashboard'],
                     '/uda/warehouse/create-bundle' => ['menu.dispatch', 'menu.dashboard'],
                     '/uda/warehouse/batch-view' => ['menu.dispatch', 'menu.dashboard'],
@@ -329,7 +391,9 @@ if ($isLoggedIn) {
                     '/system/logs' => ['menu.logs', 'menu.roles'],
                 ];
                 foreach ($fallbackRoutePermissions as $path => $permKeys) {
-                    if (hasAnyPermissionKey($permKeys)) {
+                    $merged = array_merge((array)$permKeys, RouteMenuNavMap::menuNavKeysForUri($path));
+                    $merged = array_values(array_unique($merged));
+                    if (hasAnyPermissionKey($merged)) {
                         header('Location: ' . $path);
                         exit;
                     }

@@ -4,6 +4,33 @@
 /** @var string $title */
 /** @var string $message */
 /** @var string $error */
+$dash = t('dispatch.view.common.dash', '—');
+$orderStatusLabel = static function (string $s): string {
+    $map = [
+        '待入库' => ['dispatch.view.order_status.wait_inbound', '待入库'],
+        '部分入库' => ['dispatch.view.order_status.partial_inbound', '部分入库'],
+        '已入库' => ['dispatch.view.order_status.inbound', '已入库'],
+        '待自取' => ['dispatch.view.order_status.wait_pickup', '待自取'],
+        '待转发' => ['dispatch.view.order_status.wait_forward', '待转发'],
+        '已出库' => ['dispatch.view.order_status.outbound', '已出库'],
+        '已自取' => ['dispatch.view.order_status.picked', '已自取'],
+        '已转发' => ['dispatch.view.order_status.forwarded', '已转发'],
+        '已派送' => ['dispatch.view.order_status.delivered', '已派送'],
+        '问题件' => ['dispatch.view.order_status.issue', '问题件'],
+    ];
+    if (!isset($map[$s])) {
+        return $s;
+    }
+    return t($map[$s][0], $map[$s][1]);
+};
+$fwdI18n = [
+    'dash' => $dash,
+    'needTrack' => t('dispatch.view.forwarding.js_need_track', '请至少加入一个原始单号'),
+    'confirmRevert' => t('dispatch.view.forwarding.js_confirm_revert', '确认将该订单从待转发移回已入库？'),
+    'altVoucher' => t('dispatch.view.forwarding.alt_voucher', '凭证'),
+    'confirmDelCust' => t('dispatch.view.forwarding.confirm_del_cust', '确认删除该转发客户？'),
+    'confirmDelPkg' => t('dispatch.view.forwarding.confirm_del_pkg', '确认删除该转发合包？删除后内件订单状态将回滚为已入库。'),
+];
 ?>
 
 <style>
@@ -60,27 +87,29 @@
     @media (max-width: 900px) { .fwd-grid { grid-template-columns:1fr; } }
 </style>
 
+<script>
+window.__dispatchFwdI18n = <?php echo json_encode($fwdI18n, JSON_UNESCAPED_UNICODE | JSON_HEX_TAG | JSON_HEX_AMP | JSON_HEX_APOS | JSON_HEX_QUOT); ?>;
+</script>
 <div class="card">
-    <h2 style="margin:0 0 6px 0;"><?php echo htmlspecialchars((string)($title ?? '派送业务 / 转发操作')); ?></h2>
-    <div class="muted">先按 V1 的转发合包 / 固定客户 / 查询记录模式搭建，后续再按你的业务差异微调。</div>
+    <h2 style="margin:0 0 6px 0;"><?php echo htmlspecialchars((string)($title ?? t('dispatch.view.forwarding.title_default', '派送业务 / 转发操作'))); ?></h2>
+    <div class="muted"><?php echo htmlspecialchars(t('dispatch.view.forwarding.subtitle', '先按 V1 的转发合包 / 固定客户 / 查询记录模式搭建，后续再按你的业务差异微调。')); ?></div>
 </div>
 
 <?php if (!$schemaReady): ?>
     <div class="card" style="border-left:4px solid #dc2626;">
-        转发操作相关数据表尚未建立，请先执行 <code>database/migrations/027_dispatch_forwarding_tables.sql</code>，
-        并执行权限种子 <code>database/seeders/011_dispatch_forwarding_permissions_seed.sql</code>。
+        <?php echo t('dispatch.view.forwarding.schema', '转发操作相关数据表尚未建立，请先执行 <code>database/migrations/027_dispatch_forwarding_tables.sql</code>，并执行权限种子 <code>database/seeders/011_dispatch_forwarding_permissions_seed.sql</code>。'); ?>
     </div>
     <?php return; ?>
 <?php endif; ?>
 
 <?php if (($activeTab ?? '') === 'packages' && isset($packageFeeColumnReady) && !$packageFeeColumnReady): ?>
     <div class="card" style="border-left:4px solid #ca8a04;">
-        转发合包需「转发费用」字段，请先执行 <code>database/migrations/029_dispatch_forward_package_forward_fee.sql</code> 后再提交表单。
+        <?php echo t('dispatch.view.forwarding.need_fee_col', '转发合包需「转发费用」字段，请先执行 <code>database/migrations/029_dispatch_forward_package_forward_fee.sql</code> 后再提交表单。'); ?>
     </div>
 <?php endif; ?>
 <?php if (($activeTab ?? '') === 'packages' && isset($packageVoucherColumnReady) && !$packageVoucherColumnReady): ?>
     <div class="card" style="border-left:4px solid #ca8a04;">
-        转发合包需「凭证上传」字段，请先执行 <code>database/migrations/030_dispatch_forward_package_voucher_path.sql</code> 后再提交表单。
+        <?php echo t('dispatch.view.forwarding.need_voucher_col', '转发合包需「凭证上传」字段，请先执行 <code>database/migrations/030_dispatch_forward_package_voucher_path.sql</code> 后再提交表单。'); ?>
     </div>
 <?php endif; ?>
 
@@ -93,24 +122,24 @@
 
 <?php if ($activeTab === 'packages'): ?>
     <div class="card">
-        <h3 style="margin-top:0;">新增转发合包</h3>
+        <h3 style="margin-top:0;"><?php echo htmlspecialchars(t('dispatch.view.forwarding.pkg_new_title', '新增转发合包')); ?></h3>
         <form method="post" id="forwardPkgForm" class="fwd-grid" enctype="multipart/form-data">
             <div>
-                <label>转发单号（必填）</label>
+                <label><?php echo htmlspecialchars(t('dispatch.view.forwarding.label_pkg_no', '转发单号（必填）')); ?></label>
                 <input class="fwd-input" type="text" name="package_no" required>
             </div>
             <div>
-                <label>发出时间（必填）</label>
+                <label><?php echo htmlspecialchars(t('dispatch.view.forwarding.label_send_at', '发出时间（必填）')); ?></label>
                 <input class="fwd-input" type="datetime-local" name="send_at" id="fwd_send_at" required>
             </div>
             <div>
-                <label>转发费用（必填）</label>
+                <label><?php echo htmlspecialchars(t('dispatch.view.forwarding.label_fee', '转发费用（必填）')); ?></label>
                 <input class="fwd-input" type="number" name="forward_fee" step="0.01" min="0" inputmode="decimal" placeholder="0.00" required>
             </div>
             <div>
-                <label>派送客户（委托客户 · 客户编号 · 微信/Line）</label>
+                <label><?php echo htmlspecialchars(t('dispatch.view.forwarding.label_customer', '派送客户（委托客户 · 客户编号 · 微信/Line）')); ?></label>
                 <select class="fwd-select" name="forward_delivery_customer_id" id="fwd_customer_select">
-                    <option value="">不选（无客户代码订单：手填下方收件信息）</option>
+                    <option value=""><?php echo htmlspecialchars(t('dispatch.view.forwarding.opt_no_customer', '不选（无客户代码订单：手填下方收件信息）')); ?></option>
                     <?php foreach (($customerOptions ?? []) as $c): ?>
                         <?php
                         $optRec = trim((string)($c['opt_recipient'] ?? ''));
@@ -132,53 +161,53 @@
                 </select>
             </div>
             <div>
-                <label>收件人（必填）</label>
+                <label><?php echo htmlspecialchars(t('dispatch.view.forwarding.label_receiver', '收件人（必填）')); ?></label>
                 <input class="fwd-input" type="text" name="receiver_name" id="fwd_receiver_name" required>
             </div>
             <div>
-                <label>收件电话（必填）</label>
+                <label><?php echo htmlspecialchars(t('dispatch.view.forwarding.label_phone', '收件电话（必填）')); ?></label>
                 <input class="fwd-input" type="text" name="receiver_phone" id="fwd_receiver_phone" required>
             </div>
             <div>
-                <label>凭证上传（必填）</label>
+                <label><?php echo htmlspecialchars(t('dispatch.view.forwarding.label_voucher', '凭证上传（必填）')); ?></label>
                 <input class="fwd-input" type="file" name="voucher_image" accept="image/jpeg,image/png,image/gif,image/webp" required>
             </div>
             <div class="full">
-                <label>收件地址（必填）</label>
+                <label><?php echo htmlspecialchars(t('dispatch.view.forwarding.label_address', '收件地址（必填）')); ?></label>
                 <textarea class="fwd-textarea" name="receiver_address" id="fwd_receiver_address" required></textarea>
             </div>
             <div class="full">
-                <label>扫码/输入原始单号（回车加入，支持自动去掉 @ 后缀）</label>
+                <label><?php echo htmlspecialchars(t('dispatch.view.forwarding.label_scan', '扫码/输入原始单号（回车加入，支持自动去掉 @ 后缀）')); ?></label>
                 <div class="muted" style="margin:0 0 6px 0;font-size:13px;">
-                    用于绑定订单库中的面单：可多件扫码或输入后回车逐条加入。可与上方「派送客户」留空搭配，作无客户编码的问题件等转发；确认后订单状态将更新为「已转发」。
+                    <?php echo htmlspecialchars(t('dispatch.view.forwarding.scan_help', '用于绑定订单库中的面单：可多件扫码或输入后回车逐条加入。可与上方「派送客户」留空搭配，作无客户编码的问题件等转发；确认后订单状态将更新为「已转发」。')); ?>
                 </div>
-                <input class="fwd-input" type="text" id="fwd_scan_input" autocomplete="off" placeholder="例如 TH123456@88">
+                <input class="fwd-input" type="text" id="fwd_scan_input" autocomplete="off" placeholder="<?php echo htmlspecialchars(t('dispatch.view.forwarding.ph_scan_example', '例如 TH123456@88')); ?>">
                 <input type="hidden" name="source_tracking_nos" id="fwd_source_tracking_nos">
-                <div class="muted" style="margin-top:6px;font-size:13px;">提交前<strong>必须</strong>至少绑定一条原始单号（上方扫码/回车加入，或勾选下方候选订单）；未添加时无法提交。</div>
+                <div class="muted" style="margin-top:6px;font-size:13px;"><?php echo t('dispatch.view.forwarding.must_one_track', '提交前<strong>必须</strong>至少绑定一条原始单号（上方扫码/回车加入，或勾选下方候选订单）；未添加时无法提交。'); ?></div>
                 <div id="fwd_selected_list" class="fwd-selected"></div>
             </div>
             <div class="full">
-                <label>可转发订单（已匹配派送客户 · 主路线 OT · 待转发/已入库 · 未入合包）</label>
+                <label><?php echo htmlspecialchars(t('dispatch.view.forwarding.candidates_title', '可转发订单（已匹配派送客户 · 主路线 OT · 待转发/已入库 · 未入合包）')); ?></label>
                 <div style="display:flex;gap:8px;align-items:end;flex-wrap:wrap;margin:6px 0 8px 0;">
                     <div>
-                        <label style="font-size:12px;">客户编码筛选</label>
-                        <input class="fwd-input" type="text" id="fwd_q_customer_code" value="<?php echo htmlspecialchars((string)($_GET['q_customer_code'] ?? '')); ?>" placeholder="可选，模糊匹配">
+                        <label style="font-size:12px;"><?php echo htmlspecialchars(t('dispatch.view.forwarding.filter_code', '客户编码筛选')); ?></label>
+                        <input class="fwd-input" type="text" id="fwd_q_customer_code" value="<?php echo htmlspecialchars((string)($_GET['q_customer_code'] ?? '')); ?>" placeholder="<?php echo htmlspecialchars(t('dispatch.view.forwarding.ph_filter_optional', '可选，模糊匹配')); ?>">
                     </div>
                     <div class="inline-actions">
-                        <button type="button" id="fwd_filter_btn">筛选</button>
-                        <a class="btn" href="/dispatch/forwarding/packages">重置</a>
+                        <button type="button" id="fwd_filter_btn"><?php echo htmlspecialchars(t('dispatch.view.forwarding.btn_filter', '筛选')); ?></button>
+                        <a class="btn" href="/dispatch/forwarding/packages"><?php echo htmlspecialchars(t('dispatch.view.forwarding.btn_reset', '重置')); ?></a>
                     </div>
                 </div>
                 <div class="table-wrap">
                     <table class="data-table">
                         <tr>
-                            <th style="width:44px;">选</th>
-                            <th>原始单号</th>
-                            <th>客户编码</th>
-                            <th>微信 / Line</th>
-                            <th>订单状态</th>
-                            <th>扫描时间</th>
-                            <th>操作</th>
+                            <th style="width:44px;"><?php echo htmlspecialchars(t('dispatch.view.forwarding.th_pick', '选')); ?></th>
+                            <th><?php echo htmlspecialchars(t('dispatch.view.forwarding.th_track', '原始单号')); ?></th>
+                            <th><?php echo htmlspecialchars(t('dispatch.view.forwarding.th_cust_code', '客户编码')); ?></th>
+                            <th><?php echo htmlspecialchars(t('dispatch.view.forwarding.th_wxline_pkg', '微信 / Line')); ?></th>
+                            <th><?php echo htmlspecialchars(t('dispatch.view.forwarding.th_order_status', '订单状态')); ?></th>
+                            <th><?php echo htmlspecialchars(t('dispatch.view.forwarding.th_scan', '扫描时间')); ?></th>
+                            <th><?php echo htmlspecialchars(t('dispatch.view.forwarding.th_op', '操作')); ?></th>
                         </tr>
                         <?php foreach (($candidateRows ?? []) as $r): ?>
                             <?php
@@ -191,7 +220,7 @@
                                 <td class="cell-tip"><?php echo html_cell_tip_content((string)($r['original_tracking_no'] ?? '')); ?></td>
                                 <td class="cell-tip"><?php echo html_cell_tip_content((string)($r['matched_customer_code'] ?? $r['delivery_customer_code'] ?? '')); ?></td>
                                 <td class="cell-tip"><?php echo html_cell_tip_content($wxLine); ?></td>
-                                <td class="cell-tip"><?php echo html_cell_tip_content((string)($r['order_status'] ?? '')); ?></td>
+                                <td class="cell-tip"><?php echo html_cell_tip_content($orderStatusLabel((string)($r['order_status'] ?? ''))); ?></td>
                                 <td class="cell-tip"><?php echo html_cell_tip_content((string)($r['scanned_at'] ?? '')); ?></td>
                                 <td>
                                     <?php if ((string)($r['order_status'] ?? '') === '待转发'): ?>
@@ -200,9 +229,9 @@
                                             class="btn fwd-revert-btn"
                                             data-waybill-id="<?php echo (int)($r['waybill_id'] ?? 0); ?>"
                                             style="padding:2px 8px;min-height:auto;font-size:12px;background:#64748b;color:#fff;"
-                                        >移回已入库</button>
+                                        ><?php echo htmlspecialchars(t('dispatch.view.forwarding.btn_revert_inbound', '移回已入库')); ?></button>
                                     <?php else: ?>
-                                        <span class="muted">—</span>
+                                        <span class="muted"><?php echo htmlspecialchars($dash); ?></span>
                                     <?php endif; ?>
                                 </td>
                             </tr>
@@ -211,11 +240,11 @@
                 </div>
             </div>
             <div class="full">
-                <label>备注</label>
+                <label><?php echo htmlspecialchars(t('dispatch.view.forwarding.label_remark', '备注')); ?></label>
                 <textarea class="fwd-textarea" name="remark"></textarea>
             </div>
             <div class="full">
-                <button type="submit" name="forward_create_package" <?php echo (empty($packageFeeColumnReady) || empty($packageVoucherColumnReady)) ? 'disabled' : ''; ?>>转发确认</button>
+                <button type="submit" name="forward_create_package" <?php echo (empty($packageFeeColumnReady) || empty($packageVoucherColumnReady)) ? 'disabled' : ''; ?>><?php echo htmlspecialchars(t('dispatch.view.forwarding.btn_confirm_forward', '转发确认')); ?></button>
             </div>
         </form>
     </div>
@@ -223,69 +252,69 @@
 
 <?php if ($activeTab === 'customers'): ?>
     <div class="card">
-        <h3 style="margin-top:0;">手动推送添加</h3>
+        <h3 style="margin-top:0;"><?php echo htmlspecialchars(t('dispatch.view.forwarding.cust_push_title', '手动推送添加')); ?></h3>
         <form method="post" class="fwd-grid">
             <div>
-                <label>客户代码</label>
-                <input class="fwd-input" type="text" name="customer_code" placeholder="输入客户编码后推送添加" required>
+                <label><?php echo htmlspecialchars(t('dispatch.view.forwarding.label_cust_code_push', '客户代码')); ?></label>
+                <input class="fwd-input" type="text" name="customer_code" placeholder="<?php echo htmlspecialchars(t('dispatch.view.forwarding.ph_push_code', '输入客户编码后推送添加')); ?>" required>
             </div>
             <div class="full">
-                <button type="submit" name="push_forward_customer_by_code">确认推送</button>
+                <button type="submit" name="push_forward_customer_by_code"><?php echo htmlspecialchars(t('dispatch.view.forwarding.btn_push', '确认推送')); ?></button>
             </div>
         </form>
     </div>
 
     <?php if (!empty($editRow)): ?>
         <div class="card">
-            <h3 style="margin-top:0;">编辑转发客户（保存后清除“新/改”标记）</h3>
+            <h3 style="margin-top:0;"><?php echo htmlspecialchars(t('dispatch.view.forwarding.edit_title', '编辑转发客户（保存后清除“新/改”标记）')); ?></h3>
             <form method="post" class="fwd-grid">
                 <input type="hidden" name="customer_id" value="<?php echo (int)($editRow['id'] ?? 0); ?>">
                 <div>
-                    <label>客户代码（不可改）</label>
+                    <label><?php echo htmlspecialchars(t('dispatch.view.forwarding.label_code_ro', '客户代码（不可改）')); ?></label>
                     <input class="fwd-input" type="text" value="<?php echo htmlspecialchars((string)($editRow['customer_code'] ?? '')); ?>" disabled>
                 </div>
                 <div>
-                    <label>微信/Line号（不可改）</label>
+                    <label><?php echo htmlspecialchars(t('dispatch.view.forwarding.label_wxline_ro', '微信/Line号（不可改）')); ?></label>
                     <input class="fwd-input" type="text" value="<?php echo htmlspecialchars((string)($editRow['wechat_line'] ?? '')); ?>" disabled>
                 </div>
                 <div>
-                    <label>收件人</label>
+                    <label><?php echo htmlspecialchars(t('dispatch.view.forwarding.label_recipient', '收件人')); ?></label>
                     <input class="fwd-input" type="text" name="recipient_name" value="<?php echo htmlspecialchars((string)($editRow['recipient_name'] ?? '')); ?>">
                 </div>
                 <div>
-                    <label>电话</label>
+                    <label><?php echo htmlspecialchars(t('dispatch.view.forwarding.label_phone_edit', '电话')); ?></label>
                     <input class="fwd-input" type="text" name="phone" value="<?php echo htmlspecialchars((string)($editRow['phone'] ?? '')); ?>">
                 </div>
                 <div class="full">
-                    <label>完整泰文地址</label>
+                    <label><?php echo htmlspecialchars(t('dispatch.view.forwarding.label_addr_th', '完整泰文地址')); ?></label>
                     <textarea class="fwd-textarea" name="addr_th_full"><?php echo htmlspecialchars((string)($editRow['addr_th_full'] ?? ($editRow['address'] ?? ''))); ?></textarea>
                 </div>
                 <div>
-                    <label>状态</label>
+                    <label><?php echo htmlspecialchars(t('dispatch.view.forwarding.label_status', '状态')); ?></label>
                     <select class="fwd-select" name="status">
-                        <option value="1" <?php echo (int)($editRow['status'] ?? 1) === 1 ? 'selected' : ''; ?>>启用</option>
-                        <option value="0" <?php echo (int)($editRow['status'] ?? 1) === 0 ? 'selected' : ''; ?>>停用</option>
+                        <option value="1" <?php echo (int)($editRow['status'] ?? 1) === 1 ? 'selected' : ''; ?>><?php echo htmlspecialchars(t('dispatch.view.forwarding.status_on', '启用')); ?></option>
+                        <option value="0" <?php echo (int)($editRow['status'] ?? 1) === 0 ? 'selected' : ''; ?>><?php echo htmlspecialchars(t('dispatch.view.forwarding.status_off', '停用')); ?></option>
                     </select>
                 </div>
                 <div class="full">
-                    <button type="submit" name="save_forward_customer_edit">保存修改</button>
-                    <a class="btn" href="/dispatch/forwarding/customers">取消</a>
+                    <button type="submit" name="save_forward_customer_edit"><?php echo htmlspecialchars(t('dispatch.view.forwarding.btn_save', '保存修改')); ?></button>
+                    <a class="btn" href="/dispatch/forwarding/customers"><?php echo htmlspecialchars(t('dispatch.view.forwarding.btn_cancel', '取消')); ?></a>
                 </div>
             </form>
         </div>
     <?php endif; ?>
 
     <div class="card">
-        <h3 style="margin-top:0;">客户列表</h3>
+        <h3 style="margin-top:0;"><?php echo htmlspecialchars(t('dispatch.view.forwarding.list_title', '客户列表')); ?></h3>
         <form method="get" class="fwd-list-tools">
-            <input class="fwd-input" type="text" name="q" value="<?php echo htmlspecialchars((string)($_GET['q'] ?? '')); ?>" placeholder="按客户代码/微信Line搜索">
-            <button type="submit">搜索</button>
-            <a class="btn" href="/dispatch/forwarding/customers">重置</a>
+            <input class="fwd-input" type="text" name="q" value="<?php echo htmlspecialchars((string)($_GET['q'] ?? '')); ?>" placeholder="<?php echo htmlspecialchars(t('dispatch.view.forwarding.ph_search_cust', '按客户代码/微信Line搜索')); ?>">
+            <button type="submit"><?php echo htmlspecialchars(t('dispatch.view.forwarding.btn_search', '搜索')); ?></button>
+            <a class="btn" href="/dispatch/forwarding/customers"><?php echo htmlspecialchars(t('dispatch.view.forwarding.btn_reset', '重置')); ?></a>
         </form>
         <div class="table-wrap">
             <table class="data-table fwd-customer-table table-valign-middle">
                 <tr>
-                    <th>客户编码</th><th>微信/Line号</th><th>收件人</th><th>电话</th><th>完整泰文地址</th><th>状态</th><th>操作</th>
+                    <th><?php echo htmlspecialchars(t('dispatch.view.forwarding.th_cust_code', '客户编码')); ?></th><th><?php echo htmlspecialchars(t('dispatch.view.forwarding.th_wxline_customer', '微信/Line号')); ?></th><th><?php echo htmlspecialchars(t('dispatch.view.forwarding.th_recipient', '收件人')); ?></th><th><?php echo htmlspecialchars(t('dispatch.view.forwarding.th_phone', '电话')); ?></th><th><?php echo htmlspecialchars(t('dispatch.view.forwarding.th_addr', '完整泰文地址')); ?></th><th><?php echo htmlspecialchars(t('dispatch.view.forwarding.th_state', '状态')); ?></th><th><?php echo htmlspecialchars(t('dispatch.view.forwarding.th_op_customer', '操作')); ?></th>
                 </tr>
                 <?php foreach (($rows ?? []) as $r): ?>
                     <tr>
@@ -298,9 +327,9 @@
                             <?php
                             $mark = trim((string)($r['sync_mark'] ?? ''));
                             if ($mark === 'new') {
-                                echo '<span class="sync-flag sync-flag-new">新</span>';
+                                echo '<span class="sync-flag sync-flag-new">' . htmlspecialchars(t('dispatch.view.forwarding.mark_new', '新')) . '</span>';
                             } elseif ($mark === 'modified') {
-                                echo '<span class="sync-flag sync-flag-mod">改</span>';
+                                echo '<span class="sync-flag sync-flag-mod">' . htmlspecialchars(t('dispatch.view.forwarding.mark_mod', '改')) . '</span>';
                             } else {
                                 echo '';
                             }
@@ -309,15 +338,15 @@
                         <td class="col-op">
                             <?php if (!empty($canManage)): ?>
                             <div class="dispatch-row-actions">
-                                <a class="btn btn-dispatch-round btn-dispatch-round--edit" href="/dispatch/forwarding/customers?edit_id=<?php echo (int)$r['id']; ?>" title="编辑">E</a>
-                                <form method="post" action="/dispatch/forwarding/customers" style="display:inline;margin:0;" onsubmit="return confirm('确认删除该转发客户？');">
+                                <a class="btn btn-dispatch-round btn-dispatch-round--edit" href="/dispatch/forwarding/customers?edit_id=<?php echo (int)$r['id']; ?>" title="<?php echo htmlspecialchars(t('dispatch.view.forwarding.title_edit', '编辑')); ?>">E</a>
+                                <form method="post" action="/dispatch/forwarding/customers" style="display:inline;margin:0;" onsubmit="return confirm(window.__dispatchFwdI18n.confirmDelCust);">
                                     <input type="hidden" name="delete_forward_customer" value="1">
                                     <input type="hidden" name="customer_id" value="<?php echo (int)$r['id']; ?>">
-                                    <button type="submit" class="btn btn-dispatch-round btn-dispatch-round--delete" title="删除">D</button>
+                                    <button type="submit" class="btn btn-dispatch-round btn-dispatch-round--delete" title="<?php echo htmlspecialchars(t('dispatch.view.forwarding.title_delete', '删除')); ?>">D</button>
                                 </form>
                             </div>
                             <?php else: ?>
-                            <span class="muted">—</span>
+                            <span class="muted"><?php echo htmlspecialchars($dash); ?></span>
                             <?php endif; ?>
                         </td>
                     </tr>
@@ -329,33 +358,43 @@
 
 <?php if ($activeTab === 'records'): ?>
     <div class="card">
-        <h3 style="margin-top:0;">查询记录</h3>
-        <form method="get" class="fwd-grid" style="margin-bottom:12px;">
+        <h3 style="margin-top:0;"><?php echo htmlspecialchars(t('dispatch.view.forwarding.records_title', '查询记录')); ?></h3>
+        <form method="get" class="fwd-grid" id="fwd_records_filter_form" style="margin-bottom:12px;">
             <div>
-                <label>转发单号</label>
+                <label><?php echo htmlspecialchars(t('dispatch.view.forwarding.label_q_pkg', '转发单号')); ?></label>
                 <input class="fwd-input" type="text" name="q_package_no" value="<?php echo htmlspecialchars((string)($_GET['q_package_no'] ?? '')); ?>">
             </div>
             <div>
-                <label>客户代码</label>
+                <label><?php echo htmlspecialchars(t('dispatch.view.forwarding.label_q_cust', '客户代码')); ?></label>
                 <input class="fwd-input" type="text" name="q_customer_code" value="<?php echo htmlspecialchars((string)($_GET['q_customer_code'] ?? '')); ?>">
             </div>
             <div>
-                <label>原始单号</label>
+                <label><?php echo htmlspecialchars(t('dispatch.view.forwarding.label_q_track', '原始单号')); ?></label>
                 <input class="fwd-input" type="text" name="q_source_no" value="<?php echo htmlspecialchars((string)($_GET['q_source_no'] ?? '')); ?>">
             </div>
             <div>
-                <label>入库批次</label>
+                <label><?php echo htmlspecialchars(t('dispatch.view.forwarding.label_q_batch', '入库批次')); ?></label>
                 <input class="fwd-input" type="text" name="q_inbound_batch" value="<?php echo htmlspecialchars((string)($_GET['q_inbound_batch'] ?? '')); ?>">
             </div>
             <div style="display:flex;align-items:flex-end;gap:10px;">
-                <button type="submit">查询</button>
-                <a class="btn" href="/dispatch/forwarding/records">重置</a>
+                <button type="submit"><?php echo htmlspecialchars(t('dispatch.view.forwarding.btn_query', '查询')); ?></button>
+                <a class="btn" href="/dispatch/forwarding/records"><?php echo htmlspecialchars(t('dispatch.view.forwarding.btn_reset', '重置')); ?></a>
             </div>
         </form>
+        <script>
+        (function () {
+            var f = document.getElementById('fwd_records_filter_form');
+            if (!f) return;
+            var inp = f.querySelector('input[name="q_source_no"]');
+            if (!inp) return;
+            function stripScanSuffix(s) { return String(s || '').trim().replace(/@\d+$/, '').trim(); }
+            f.addEventListener('submit', function () { inp.value = stripScanSuffix(inp.value); });
+        })();
+        </script>
         <div class="table-wrap">
             <table class="data-table">
                 <tr>
-                    <th>转发单号</th><th>发出时间</th><th>转发费用</th><th>客户代码</th><th>收件人</th><th>电话</th><th>入库批次</th><th>内件数</th><th>原始单号</th><th>凭证</th><th>详情</th><th>操作</th><th>录入人</th><th>录入时间</th>
+                    <th><?php echo htmlspecialchars(t('dispatch.view.forwarding.rec_th_pkg', '转发单号')); ?></th><th><?php echo htmlspecialchars(t('dispatch.view.forwarding.rec_th_send', '发出时间')); ?></th><th><?php echo htmlspecialchars(t('dispatch.view.forwarding.rec_th_fee', '转发费用')); ?></th><th><?php echo htmlspecialchars(t('dispatch.view.forwarding.rec_th_cust', '客户代码')); ?></th><th><?php echo htmlspecialchars(t('dispatch.view.forwarding.rec_th_recv', '收件人')); ?></th><th><?php echo htmlspecialchars(t('dispatch.view.forwarding.rec_th_phone', '电话')); ?></th><th><?php echo htmlspecialchars(t('dispatch.view.forwarding.rec_th_batch', '入库批次')); ?></th><th><?php echo htmlspecialchars(t('dispatch.view.forwarding.rec_th_items', '内件数')); ?></th><th><?php echo htmlspecialchars(t('dispatch.view.forwarding.rec_th_tracks', '原始单号')); ?></th><th><?php echo htmlspecialchars(t('dispatch.view.forwarding.rec_th_voucher', '凭证')); ?></th><th><?php echo htmlspecialchars(t('dispatch.view.forwarding.rec_th_detail', '详情')); ?></th><th><?php echo htmlspecialchars(t('dispatch.view.forwarding.rec_th_op', '操作')); ?></th><th><?php echo htmlspecialchars(t('dispatch.view.forwarding.rec_th_by', '录入人')); ?></th><th><?php echo htmlspecialchars(t('dispatch.view.forwarding.rec_th_at', '录入时间')); ?></th>
                 </tr>
                 <?php foreach (($rows ?? []) as $r): ?>
                     <?php
@@ -387,19 +426,19 @@
                         <td class="cell-tip"><?php echo html_cell_tip_content((string)($r['source_tracking_nos'] ?? '')); ?></td>
                         <td>
                             <?php if ($voucherUrl !== ''): ?>
-                                <button type="button" class="btn fwd-voucher-btn" data-voucher-url="<?php echo htmlspecialchars($voucherUrl, ENT_QUOTES); ?>" style="padding:4px 8px;min-height:auto;">查看</button>
+                                <button type="button" class="btn fwd-voucher-btn" data-voucher-url="<?php echo htmlspecialchars($voucherUrl, ENT_QUOTES); ?>" style="padding:4px 8px;min-height:auto;"><?php echo htmlspecialchars(t('dispatch.view.forwarding.btn_view', '查看')); ?></button>
                             <?php else: ?>
-                                —
+                                <?php echo htmlspecialchars($dash); ?>
                             <?php endif; ?>
                         </td>
                         <td>
-                            <button type="button" class="btn fwd-detail-btn" data-detail="<?php echo htmlspecialchars(json_encode($detailPayload, JSON_UNESCAPED_UNICODE), ENT_QUOTES, 'UTF-8'); ?>" style="padding:4px 8px;min-height:auto;">查看</button>
+                            <button type="button" class="btn fwd-detail-btn" data-detail="<?php echo htmlspecialchars(json_encode($detailPayload, JSON_UNESCAPED_UNICODE), ENT_QUOTES, 'UTF-8'); ?>" style="padding:4px 8px;min-height:auto;"><?php echo htmlspecialchars(t('dispatch.view.forwarding.btn_view', '查看')); ?></button>
                         </td>
                         <td>
-                            <form method="post" action="/dispatch/forwarding/records" style="display:inline;" onsubmit="return confirm('确认删除该转发合包？删除后内件订单状态将回滚为已入库。');">
+                            <form method="post" action="/dispatch/forwarding/records" style="display:inline;" onsubmit="return confirm(window.__dispatchFwdI18n.confirmDelPkg);">
                                 <input type="hidden" name="delete_forward_package" value="1">
                                 <input type="hidden" name="package_id" value="<?php echo (int)($r['id'] ?? 0); ?>">
-                                <button type="submit" class="btn" style="padding:4px 8px;min-height:auto;background:#b91c1c;color:#fff;">删</button>
+                                <button type="submit" class="btn" style="padding:4px 8px;min-height:auto;background:#b91c1c;color:#fff;"><?php echo htmlspecialchars(t('dispatch.view.forwarding.btn_del_short', '删')); ?></button>
                             </form>
                         </td>
                         <td class="cell-tip"><?php echo html_cell_tip_content((string)($r['created_by_name'] ?? '')); ?></td>
@@ -413,32 +452,32 @@
 
 <div id="fwdVoucherModal" style="display:none;position:fixed;inset:0;background:rgba(0,0,0,.35);z-index:9999;align-items:center;justify-content:center;padding:12px;">
     <div style="position:relative;max-width:980px;width:100%;max-height:92vh;overflow:auto;background:#fff;border-radius:12px;padding:16px 18px;box-shadow:0 10px 28px rgba(0,0,0,.2);">
-        <button type="button" class="fwd-modal-close-x" id="fwdVoucherCloseX" aria-label="关闭">×</button>
-        <h3 style="margin:0 0 10px 0;">凭证查看</h3>
+        <button type="button" class="fwd-modal-close-x" id="fwdVoucherCloseX" aria-label="<?php echo htmlspecialchars(t('dispatch.view.forwarding.aria_close', '关闭')); ?>">×</button>
+        <h3 style="margin:0 0 10px 0;"><?php echo htmlspecialchars(t('dispatch.view.forwarding.voucher_title', '凭证查看')); ?></h3>
         <div id="fwdVoucherBody"></div>
     </div>
 </div>
 
 <div id="fwdDetailModal" style="display:none;position:fixed;inset:0;background:rgba(0,0,0,.35);z-index:9999;align-items:center;justify-content:center;padding:12px;">
     <div style="position:relative;max-width:900px;width:100%;max-height:92vh;overflow:auto;background:#fff;border-radius:12px;padding:16px 18px;box-shadow:0 10px 28px rgba(0,0,0,.2);">
-        <button type="button" class="fwd-modal-close-x" id="fwdDetailCloseX" aria-label="关闭">×</button>
-        <h3 style="margin:0 0 10px 0;">转发详情</h3>
+        <button type="button" class="fwd-modal-close-x" id="fwdDetailCloseX" aria-label="<?php echo htmlspecialchars(t('dispatch.view.forwarding.aria_close', '关闭')); ?>">×</button>
+        <h3 style="margin:0 0 10px 0;"><?php echo htmlspecialchars(t('dispatch.view.forwarding.detail_title', '转发详情')); ?></h3>
         <div class="fwd-detail-grid">
-            <label>转发信息</label>
+            <label><?php echo htmlspecialchars(t('dispatch.view.forwarding.d_label_info', '转发信息')); ?></label>
             <div id="fwd_d_topline" class="fwd-detail-val fwd-line-combo">
-                <span class="fwd-line-chip"><span class="k">转发单号</span><span class="v" id="fwd_d_package_no">—</span></span>
-                <span class="fwd-line-chip"><span class="k">转发费用</span><span class="v fwd-fee-em"><span id="fwd_d_fee">—</span> THB</span></span>
+                <span class="fwd-line-chip"><span class="k"><?php echo htmlspecialchars(t('dispatch.view.forwarding.d_k_pkg_no', '转发单号')); ?></span><span class="v" id="fwd_d_package_no"><?php echo htmlspecialchars($dash); ?></span></span>
+                <span class="fwd-line-chip"><span class="k"><?php echo htmlspecialchars(t('dispatch.view.forwarding.d_k_fee', '转发费用')); ?></span><span class="v fwd-fee-em"><span id="fwd_d_fee"><?php echo htmlspecialchars($dash); ?></span> THB</span></span>
             </div>
-            <label>发出时间</label><div id="fwd_d_send_at" class="fwd-detail-val">—</div>
-            <label>收件资料</label>
+            <label><?php echo htmlspecialchars(t('dispatch.view.forwarding.d_label_send', '发出时间')); ?></label><div id="fwd_d_send_at" class="fwd-detail-val"><?php echo htmlspecialchars($dash); ?></div>
+            <label><?php echo htmlspecialchars(t('dispatch.view.forwarding.d_label_recv_block', '收件资料')); ?></label>
             <div id="fwd_d_line3" class="fwd-detail-val fwd-line-combo">
-                <span class="fwd-line-chip"><span class="k">客户代码</span><span class="v" id="fwd_d_customer_code">—</span></span>
-                <span class="fwd-line-chip"><span class="k">收件人</span><span class="v" id="fwd_d_receiver">—</span></span>
-                <span class="fwd-line-chip"><span class="k">收件电话</span><span class="v" id="fwd_d_phone">—</span></span>
+                <span class="fwd-line-chip"><span class="k"><?php echo htmlspecialchars(t('dispatch.view.forwarding.d_k_cust', '客户代码')); ?></span><span class="v" id="fwd_d_customer_code"><?php echo htmlspecialchars($dash); ?></span></span>
+                <span class="fwd-line-chip"><span class="k"><?php echo htmlspecialchars(t('dispatch.view.forwarding.d_k_recv', '收件人')); ?></span><span class="v" id="fwd_d_receiver"><?php echo htmlspecialchars($dash); ?></span></span>
+                <span class="fwd-line-chip"><span class="k"><?php echo htmlspecialchars(t('dispatch.view.forwarding.d_k_phone', '收件电话')); ?></span><span class="v" id="fwd_d_phone"><?php echo htmlspecialchars($dash); ?></span></span>
             </div>
-            <label>收件地址</label><div id="fwd_d_address" class="fwd-detail-val">—</div>
-            <label>原始单号</label><div id="fwd_d_source_nos" class="fwd-detail-val">—</div>
-            <label>凭证</label><div id="fwd_d_voucher_wrap" class="fwd-detail-val" style="align-items:flex-start;">—</div>
+            <label><?php echo htmlspecialchars(t('dispatch.view.forwarding.d_label_addr', '收件地址')); ?></label><div id="fwd_d_address" class="fwd-detail-val"><?php echo htmlspecialchars($dash); ?></div>
+            <label><?php echo htmlspecialchars(t('dispatch.view.forwarding.d_label_tracks', '原始单号')); ?></label><div id="fwd_d_source_nos" class="fwd-detail-val"><?php echo htmlspecialchars($dash); ?></div>
+            <label><?php echo htmlspecialchars(t('dispatch.view.forwarding.d_label_voucher', '凭证')); ?></label><div id="fwd_d_voucher_wrap" class="fwd-detail-val" style="align-items:flex-start;"><?php echo htmlspecialchars($dash); ?></div>
         </div>
     </div>
 </div>
@@ -543,7 +582,7 @@ document.addEventListener('DOMContentLoaded', function () {
             sync();
             if (!hiddenInput || hiddenInput.value.trim() === '') {
                 e.preventDefault();
-                alert('请至少加入一个原始单号');
+                alert(window.__dispatchFwdI18n.needTrack);
             }
         });
     }
@@ -563,7 +602,7 @@ document.addEventListener('DOMContentLoaded', function () {
         btn.addEventListener('click', function () {
             var waybillId = parseInt(String(btn.getAttribute('data-waybill-id') || '0'), 10) || 0;
             if (waybillId <= 0) return;
-            if (!window.confirm('确认将该订单从待转发移回已入库？')) return;
+            if (!window.confirm(window.__dispatchFwdI18n.confirmRevert)) return;
             submitPost('/dispatch/forwarding/packages', {
                 forward_revert_to_inbound: '1',
                 waybill_id: String(waybillId)
@@ -572,8 +611,10 @@ document.addEventListener('DOMContentLoaded', function () {
     });
 
     function txt(v) {
+        var I2 = window.__dispatchFwdI18n || {};
+        var d = (I2.dash !== undefined && I2.dash !== null && String(I2.dash) !== '') ? String(I2.dash) : '\u2014';
         var s = String(v || '').trim();
-        return s === '' ? '—' : s;
+        return s === '' ? d : s;
     }
     var voucherModal = document.getElementById('fwdVoucherModal');
     var voucherBody = document.getElementById('fwdVoucherBody');
@@ -587,7 +628,7 @@ document.addEventListener('DOMContentLoaded', function () {
         btn.addEventListener('click', function () {
             var url = String(btn.getAttribute('data-voucher-url') || '').trim();
             if (!url || !voucherModal || !voucherBody) return;
-            voucherBody.innerHTML = '<img src="' + url.replace(/"/g, '&quot;') + '" alt="凭证" class="fwd-voucher-modal-img">';
+            voucherBody.innerHTML = '<img src="' + url.replace(/"/g, '&quot;') + '" alt="' + String((window.__dispatchFwdI18n && window.__dispatchFwdI18n.altVoucher) || '').replace(/"/g, '&quot;') + '" class="fwd-voucher-modal-img">';
             voucherModal.style.display = 'flex';
         });
     });
@@ -617,7 +658,9 @@ document.addEventListener('DOMContentLoaded', function () {
             var voucherWrap = document.getElementById('fwd_d_voucher_wrap');
             if (voucherWrap) {
                 var voucherUrl = String(payload.voucher_url || '').trim();
-                voucherWrap.innerHTML = voucherUrl === '' ? '—' : ('<img src="' + voucherUrl.replace(/"/g, '&quot;') + '" alt="凭证" class="fwd-voucher-detail-img">');
+                var altV = (window.__dispatchFwdI18n && window.__dispatchFwdI18n.altVoucher) ? String(window.__dispatchFwdI18n.altVoucher).replace(/"/g, '&quot;') : '';
+                var dsh = (window.__dispatchFwdI18n && window.__dispatchFwdI18n.dash) ? String(window.__dispatchFwdI18n.dash) : '\u2014';
+                voucherWrap.innerHTML = voucherUrl === '' ? dsh : ('<img src="' + voucherUrl.replace(/"/g, '&quot;') + '" alt="' + altV + '" class="fwd-voucher-detail-img">');
             }
             detailModal.style.display = 'flex';
         });

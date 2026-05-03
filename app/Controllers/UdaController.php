@@ -165,7 +165,21 @@ class UdaController
 
     public function udaForwardVoucherView(): void
     {
-        if (!$this->hasAnyPermission(['menu.dispatch', 'menu.dashboard'])) {
+        if (!$this->hasAnyPermission(array_merge([
+            'menu.nav.uda.issues.list',
+            'menu.nav.uda.issues.create',
+            'menu.nav.uda.issues.locations',
+            'menu.nav.uda.issues.reasons',
+            'menu.nav.uda.issues.handle_methods',
+            'menu.nav.uda.express.query',
+            'menu.nav.uda.express.receive',
+            'menu.nav.uda.express.forward_packages',
+            'menu.nav.uda.express.forward_query',
+            'menu.nav.uda.batches.list',
+            'menu.nav.uda.batches.create',
+            'menu.nav.uda.warehouse.bundles',
+            'menu.nav.uda.warehouse.create_bundle',
+        ], ['menu.dispatch', 'menu.dashboard']))) {
             $this->denyNoPermission('无权限查看凭证');
         }
         $conn = require __DIR__ . '/../../config/database.php';
@@ -209,7 +223,21 @@ class UdaController
 
     public function expressForwardPackages(): void
     {
-        if (!$this->hasAnyPermission(['menu.dispatch', 'menu.dashboard'])) {
+        if (!$this->hasAnyPermission(array_merge([
+            'menu.nav.uda.issues.list',
+            'menu.nav.uda.issues.create',
+            'menu.nav.uda.issues.locations',
+            'menu.nav.uda.issues.reasons',
+            'menu.nav.uda.issues.handle_methods',
+            'menu.nav.uda.express.query',
+            'menu.nav.uda.express.receive',
+            'menu.nav.uda.express.forward_packages',
+            'menu.nav.uda.express.forward_query',
+            'menu.nav.uda.batches.list',
+            'menu.nav.uda.batches.create',
+            'menu.nav.uda.warehouse.bundles',
+            'menu.nav.uda.warehouse.create_bundle',
+        ], ['menu.dispatch', 'menu.dashboard']))) {
             $this->denyNoPermission('无权限访问 UDA 转发合包');
         }
         $conn = require __DIR__ . '/../../config/database.php';
@@ -540,7 +568,21 @@ class UdaController
 
     public function expressForwardQuery(): void
     {
-        if (!$this->hasAnyPermission(['menu.dispatch', 'menu.dashboard'])) {
+        if (!$this->hasAnyPermission(array_merge([
+            'menu.nav.uda.issues.list',
+            'menu.nav.uda.issues.create',
+            'menu.nav.uda.issues.locations',
+            'menu.nav.uda.issues.reasons',
+            'menu.nav.uda.issues.handle_methods',
+            'menu.nav.uda.express.query',
+            'menu.nav.uda.express.receive',
+            'menu.nav.uda.express.forward_packages',
+            'menu.nav.uda.express.forward_query',
+            'menu.nav.uda.batches.list',
+            'menu.nav.uda.batches.create',
+            'menu.nav.uda.warehouse.bundles',
+            'menu.nav.uda.warehouse.create_bundle',
+        ], ['menu.dispatch', 'menu.dashboard']))) {
             $this->denyNoPermission('无权限访问转发查询');
         }
         $conn = require __DIR__ . '/../../config/database.php';
@@ -646,7 +688,21 @@ class UdaController
 
     public function expressReceive(): void
     {
-        if (!$this->hasAnyPermission(['menu.dispatch', 'menu.dashboard'])) {
+        if (!$this->hasAnyPermission(array_merge([
+            'menu.nav.uda.issues.list',
+            'menu.nav.uda.issues.create',
+            'menu.nav.uda.issues.locations',
+            'menu.nav.uda.issues.reasons',
+            'menu.nav.uda.issues.handle_methods',
+            'menu.nav.uda.express.query',
+            'menu.nav.uda.express.receive',
+            'menu.nav.uda.express.forward_packages',
+            'menu.nav.uda.express.forward_query',
+            'menu.nav.uda.batches.list',
+            'menu.nav.uda.batches.create',
+            'menu.nav.uda.warehouse.bundles',
+            'menu.nav.uda.warehouse.create_bundle',
+        ], ['menu.dispatch', 'menu.dashboard']))) {
             $this->denyNoPermission('无权限访问快件录入');
         }
         $conn = require __DIR__ . '/../../config/database.php';
@@ -707,7 +763,21 @@ class UdaController
 
     public function expressQuery(): void
     {
-        if (!$this->hasAnyPermission(['menu.dispatch', 'menu.dashboard'])) {
+        if (!$this->hasAnyPermission(array_merge([
+            'menu.nav.uda.issues.list',
+            'menu.nav.uda.issues.create',
+            'menu.nav.uda.issues.locations',
+            'menu.nav.uda.issues.reasons',
+            'menu.nav.uda.issues.handle_methods',
+            'menu.nav.uda.express.query',
+            'menu.nav.uda.express.receive',
+            'menu.nav.uda.express.forward_packages',
+            'menu.nav.uda.express.forward_query',
+            'menu.nav.uda.batches.list',
+            'menu.nav.uda.batches.create',
+            'menu.nav.uda.warehouse.bundles',
+            'menu.nav.uda.warehouse.create_bundle',
+        ], ['menu.dispatch', 'menu.dashboard']))) {
             $this->denyNoPermission('无权限访问快件查询');
         }
         $conn = require __DIR__ . '/../../config/database.php';
@@ -920,7 +990,21 @@ class UdaController
 
     public function issueCreate(): void
     {
-        if (!$this->hasAnyPermission(['menu.dispatch', 'menu.dashboard'])) {
+        if (!$this->hasAnyPermission(array_merge([
+            'menu.nav.uda.issues.list',
+            'menu.nav.uda.issues.create',
+            'menu.nav.uda.issues.locations',
+            'menu.nav.uda.issues.reasons',
+            'menu.nav.uda.issues.handle_methods',
+            'menu.nav.uda.express.query',
+            'menu.nav.uda.express.receive',
+            'menu.nav.uda.express.forward_packages',
+            'menu.nav.uda.express.forward_query',
+            'menu.nav.uda.batches.list',
+            'menu.nav.uda.batches.create',
+            'menu.nav.uda.warehouse.bundles',
+            'menu.nav.uda.warehouse.create_bundle',
+        ], ['menu.dispatch', 'menu.dashboard']))) {
             $this->denyNoPermission('无权限访问问题订单录入');
         }
         $conn = require __DIR__ . '/../../config/database.php';
@@ -1026,7 +1110,21 @@ class UdaController
 
     public function issueList(): void
     {
-        if (!$this->hasAnyPermission(['menu.dispatch', 'menu.dashboard'])) {
+        if (!$this->hasAnyPermission(array_merge([
+            'menu.nav.uda.issues.list',
+            'menu.nav.uda.issues.create',
+            'menu.nav.uda.issues.locations',
+            'menu.nav.uda.issues.reasons',
+            'menu.nav.uda.issues.handle_methods',
+            'menu.nav.uda.express.query',
+            'menu.nav.uda.express.receive',
+            'menu.nav.uda.express.forward_packages',
+            'menu.nav.uda.express.forward_query',
+            'menu.nav.uda.batches.list',
+            'menu.nav.uda.batches.create',
+            'menu.nav.uda.warehouse.bundles',
+            'menu.nav.uda.warehouse.create_bundle',
+        ], ['menu.dispatch', 'menu.dashboard']))) {
             $this->denyNoPermission('无权限访问问题订单列表');
         }
         $conn = require __DIR__ . '/../../config/database.php';
@@ -1259,7 +1357,21 @@ class UdaController
 
     public function issueHandleMethods(): void
     {
-        if (!$this->hasAnyPermission(['menu.dispatch', 'menu.dashboard'])) {
+        if (!$this->hasAnyPermission(array_merge([
+            'menu.nav.uda.issues.list',
+            'menu.nav.uda.issues.create',
+            'menu.nav.uda.issues.locations',
+            'menu.nav.uda.issues.reasons',
+            'menu.nav.uda.issues.handle_methods',
+            'menu.nav.uda.express.query',
+            'menu.nav.uda.express.receive',
+            'menu.nav.uda.express.forward_packages',
+            'menu.nav.uda.express.forward_query',
+            'menu.nav.uda.batches.list',
+            'menu.nav.uda.batches.create',
+            'menu.nav.uda.warehouse.bundles',
+            'menu.nav.uda.warehouse.create_bundle',
+        ], ['menu.dispatch', 'menu.dashboard']))) {
             $this->denyNoPermission('无权限访问处理方式管理');
         }
         $conn = require __DIR__ . '/../../config/database.php';
@@ -1323,7 +1435,21 @@ class UdaController
 
     public function issueLocations(): void
     {
-        if (!$this->hasAnyPermission(['menu.dispatch', 'menu.dashboard'])) {
+        if (!$this->hasAnyPermission(array_merge([
+            'menu.nav.uda.issues.list',
+            'menu.nav.uda.issues.create',
+            'menu.nav.uda.issues.locations',
+            'menu.nav.uda.issues.reasons',
+            'menu.nav.uda.issues.handle_methods',
+            'menu.nav.uda.express.query',
+            'menu.nav.uda.express.receive',
+            'menu.nav.uda.express.forward_packages',
+            'menu.nav.uda.express.forward_query',
+            'menu.nav.uda.batches.list',
+            'menu.nav.uda.batches.create',
+            'menu.nav.uda.warehouse.bundles',
+            'menu.nav.uda.warehouse.create_bundle',
+        ], ['menu.dispatch', 'menu.dashboard']))) {
             $this->denyNoPermission('无权限访问地点管理');
         }
         $conn = require __DIR__ . '/../../config/database.php';
@@ -1387,7 +1513,21 @@ class UdaController
 
     public function issueReasons(): void
     {
-        if (!$this->hasAnyPermission(['menu.dispatch', 'menu.dashboard'])) {
+        if (!$this->hasAnyPermission(array_merge([
+            'menu.nav.uda.issues.list',
+            'menu.nav.uda.issues.create',
+            'menu.nav.uda.issues.locations',
+            'menu.nav.uda.issues.reasons',
+            'menu.nav.uda.issues.handle_methods',
+            'menu.nav.uda.express.query',
+            'menu.nav.uda.express.receive',
+            'menu.nav.uda.express.forward_packages',
+            'menu.nav.uda.express.forward_query',
+            'menu.nav.uda.batches.list',
+            'menu.nav.uda.batches.create',
+            'menu.nav.uda.warehouse.bundles',
+            'menu.nav.uda.warehouse.create_bundle',
+        ], ['menu.dispatch', 'menu.dashboard']))) {
             $this->denyNoPermission('无权限访问问题原因管理');
         }
         $conn = require __DIR__ . '/../../config/database.php';
@@ -1526,7 +1666,21 @@ class UdaController
 
     public function manifestWaybillCheck(): void
     {
-        if (!$this->hasAnyPermission(['menu.dispatch', 'menu.dashboard'])) {
+        if (!$this->hasAnyPermission(array_merge([
+            'menu.nav.uda.issues.list',
+            'menu.nav.uda.issues.create',
+            'menu.nav.uda.issues.locations',
+            'menu.nav.uda.issues.reasons',
+            'menu.nav.uda.issues.handle_methods',
+            'menu.nav.uda.express.query',
+            'menu.nav.uda.express.receive',
+            'menu.nav.uda.express.forward_packages',
+            'menu.nav.uda.express.forward_query',
+            'menu.nav.uda.batches.list',
+            'menu.nav.uda.batches.create',
+            'menu.nav.uda.warehouse.bundles',
+            'menu.nav.uda.warehouse.create_bundle',
+        ], ['menu.dispatch', 'menu.dashboard']))) {
             header('Content-Type: application/json; charset=utf-8', true, 403);
             echo json_encode(['ok' => false, 'error' => '无权限'], JSON_UNESCAPED_UNICODE);
             return;
@@ -1582,7 +1736,21 @@ class UdaController
     // Legacy name kept for route compatibility: "batch" == manifest/shipment ticket.
     public function batchCreate(): void
     {
-        if (!$this->hasAnyPermission(['menu.dispatch', 'menu.dashboard'])) {
+        if (!$this->hasAnyPermission(array_merge([
+            'menu.nav.uda.issues.list',
+            'menu.nav.uda.issues.create',
+            'menu.nav.uda.issues.locations',
+            'menu.nav.uda.issues.reasons',
+            'menu.nav.uda.issues.handle_methods',
+            'menu.nav.uda.express.query',
+            'menu.nav.uda.express.receive',
+            'menu.nav.uda.express.forward_packages',
+            'menu.nav.uda.express.forward_query',
+            'menu.nav.uda.batches.list',
+            'menu.nav.uda.batches.create',
+            'menu.nav.uda.warehouse.bundles',
+            'menu.nav.uda.warehouse.create_bundle',
+        ], ['menu.dispatch', 'menu.dashboard']))) {
             $this->denyNoPermission('无权限访问集包录入');
         }
         $conn = require __DIR__ . '/../../config/database.php';
@@ -1848,7 +2016,21 @@ class UdaController
     // Legacy name kept for route compatibility: "batch" == manifest/shipment ticket.
     public function batchList(): void
     {
-        if (!$this->hasAnyPermission(['menu.dispatch', 'menu.dashboard'])) {
+        if (!$this->hasAnyPermission(array_merge([
+            'menu.nav.uda.issues.list',
+            'menu.nav.uda.issues.create',
+            'menu.nav.uda.issues.locations',
+            'menu.nav.uda.issues.reasons',
+            'menu.nav.uda.issues.handle_methods',
+            'menu.nav.uda.express.query',
+            'menu.nav.uda.express.receive',
+            'menu.nav.uda.express.forward_packages',
+            'menu.nav.uda.express.forward_query',
+            'menu.nav.uda.batches.list',
+            'menu.nav.uda.batches.create',
+            'menu.nav.uda.warehouse.bundles',
+            'menu.nav.uda.warehouse.create_bundle',
+        ], ['menu.dispatch', 'menu.dashboard']))) {
             $this->denyNoPermission('无权限访问集包列表');
         }
         $conn = require __DIR__ . '/../../config/database.php';
@@ -2061,7 +2243,21 @@ class UdaController
     // Legacy name kept for route compatibility: "batch" == manifest/shipment ticket.
     public function batchEdit(): void
     {
-        if (!$this->hasAnyPermission(['menu.dispatch', 'menu.dashboard'])) {
+        if (!$this->hasAnyPermission(array_merge([
+            'menu.nav.uda.issues.list',
+            'menu.nav.uda.issues.create',
+            'menu.nav.uda.issues.locations',
+            'menu.nav.uda.issues.reasons',
+            'menu.nav.uda.issues.handle_methods',
+            'menu.nav.uda.express.query',
+            'menu.nav.uda.express.receive',
+            'menu.nav.uda.express.forward_packages',
+            'menu.nav.uda.express.forward_query',
+            'menu.nav.uda.batches.list',
+            'menu.nav.uda.batches.create',
+            'menu.nav.uda.warehouse.bundles',
+            'menu.nav.uda.warehouse.create_bundle',
+        ], ['menu.dispatch', 'menu.dashboard']))) {
             $this->denyNoPermission('无权限修改集包');
         }
         $conn = require __DIR__ . '/../../config/database.php';
@@ -2244,7 +2440,21 @@ class UdaController
 
     public function warehouseBatchCreate(): void
     {
-        if (!$this->hasAnyPermission(['menu.dispatch', 'menu.dashboard'])) {
+        if (!$this->hasAnyPermission(array_merge([
+            'menu.nav.uda.issues.list',
+            'menu.nav.uda.issues.create',
+            'menu.nav.uda.issues.locations',
+            'menu.nav.uda.issues.reasons',
+            'menu.nav.uda.issues.handle_methods',
+            'menu.nav.uda.express.query',
+            'menu.nav.uda.express.receive',
+            'menu.nav.uda.express.forward_packages',
+            'menu.nav.uda.express.forward_query',
+            'menu.nav.uda.batches.list',
+            'menu.nav.uda.batches.create',
+            'menu.nav.uda.warehouse.bundles',
+            'menu.nav.uda.warehouse.create_bundle',
+        ], ['menu.dispatch', 'menu.dashboard']))) {
             $this->denyNoPermission('无权限访问批次录入');
         }
         $conn = require __DIR__ . '/../../config/database.php';
@@ -2432,7 +2642,21 @@ class UdaController
 
     public function warehouseBatchList(): void
     {
-        if (!$this->hasAnyPermission(['menu.dispatch', 'menu.dashboard'])) {
+        if (!$this->hasAnyPermission(array_merge([
+            'menu.nav.uda.issues.list',
+            'menu.nav.uda.issues.create',
+            'menu.nav.uda.issues.locations',
+            'menu.nav.uda.issues.reasons',
+            'menu.nav.uda.issues.handle_methods',
+            'menu.nav.uda.express.query',
+            'menu.nav.uda.express.receive',
+            'menu.nav.uda.express.forward_packages',
+            'menu.nav.uda.express.forward_query',
+            'menu.nav.uda.batches.list',
+            'menu.nav.uda.batches.create',
+            'menu.nav.uda.warehouse.bundles',
+            'menu.nav.uda.warehouse.create_bundle',
+        ], ['menu.dispatch', 'menu.dashboard']))) {
             $this->denyNoPermission('无权限访问批次列表');
         }
         $conn = require __DIR__ . '/../../config/database.php';
@@ -2506,7 +2730,21 @@ class UdaController
 
     public function warehouseBatchView(): void
     {
-        if (!$this->hasAnyPermission(['menu.dispatch', 'menu.dashboard'])) {
+        if (!$this->hasAnyPermission(array_merge([
+            'menu.nav.uda.issues.list',
+            'menu.nav.uda.issues.create',
+            'menu.nav.uda.issues.locations',
+            'menu.nav.uda.issues.reasons',
+            'menu.nav.uda.issues.handle_methods',
+            'menu.nav.uda.express.query',
+            'menu.nav.uda.express.receive',
+            'menu.nav.uda.express.forward_packages',
+            'menu.nav.uda.express.forward_query',
+            'menu.nav.uda.batches.list',
+            'menu.nav.uda.batches.create',
+            'menu.nav.uda.warehouse.bundles',
+            'menu.nav.uda.warehouse.create_bundle',
+        ], ['menu.dispatch', 'menu.dashboard']))) {
             $this->denyNoPermission('无权限访问批次详情');
         }
         $conn = require __DIR__ . '/../../config/database.php';
@@ -2548,7 +2786,21 @@ class UdaController
 
     public function warehouseBatchEdit(): void
     {
-        if (!$this->hasAnyPermission(['menu.dispatch', 'menu.dashboard'])) {
+        if (!$this->hasAnyPermission(array_merge([
+            'menu.nav.uda.issues.list',
+            'menu.nav.uda.issues.create',
+            'menu.nav.uda.issues.locations',
+            'menu.nav.uda.issues.reasons',
+            'menu.nav.uda.issues.handle_methods',
+            'menu.nav.uda.express.query',
+            'menu.nav.uda.express.receive',
+            'menu.nav.uda.express.forward_packages',
+            'menu.nav.uda.express.forward_query',
+            'menu.nav.uda.batches.list',
+            'menu.nav.uda.batches.create',
+            'menu.nav.uda.warehouse.bundles',
+            'menu.nav.uda.warehouse.create_bundle',
+        ], ['menu.dispatch', 'menu.dashboard']))) {
             $this->denyNoPermission('无权限访问批次修改');
         }
         $conn = require __DIR__ . '/../../config/database.php';
@@ -2673,9 +2925,280 @@ class UdaController
         require __DIR__ . '/../Views/layouts/main.php';
     }
 
+    /**
+     * 导出单个日期号下全部集包为装箱单 Excel（PACKING LIST：收发件人各一格换行、品名与件数列留空、表末小计与汇总）。
+     */
+    public function manifestPackingListExport(): void
+    {
+        if (!$this->hasAnyPermission(array_merge([
+            'menu.nav.uda.issues.list',
+            'menu.nav.uda.issues.create',
+            'menu.nav.uda.issues.locations',
+            'menu.nav.uda.issues.reasons',
+            'menu.nav.uda.issues.handle_methods',
+            'menu.nav.uda.express.query',
+            'menu.nav.uda.express.receive',
+            'menu.nav.uda.express.forward_packages',
+            'menu.nav.uda.express.forward_query',
+            'menu.nav.uda.batches.list',
+            'menu.nav.uda.batches.create',
+            'menu.nav.uda.warehouse.bundles',
+            'menu.nav.uda.warehouse.create_bundle',
+        ], ['menu.dispatch', 'menu.dashboard']))) {
+            $this->denyNoPermission('无权限导出装箱单');
+        }
+        if (!class_exists(\PhpOffice\PhpSpreadsheet\Spreadsheet::class)) {
+            http_response_code(503);
+            header('Content-Type: text/plain; charset=utf-8');
+            echo '服务器未安装 PhpSpreadsheet，无法生成装箱单 Excel。';
+            return;
+        }
+
+        $conn = require __DIR__ . '/../../config/database.php';
+        $manifestId = (int)($_GET['manifest_id'] ?? $_GET['batch_id'] ?? 0);
+        if ($manifestId <= 0) {
+            http_response_code(400);
+            echo 'bad request';
+            return;
+        }
+
+        $st = $conn->prepare('
+            SELECT id, batch_code, date_no, bill_no, status, created_at
+            FROM uda_manifest_batches
+            WHERE id = ?
+            LIMIT 1
+        ');
+        $manifest = null;
+        if ($st) {
+            $st->bind_param('i', $manifestId);
+            $st->execute();
+            $manifest = $st->get_result()->fetch_assoc() ?: null;
+            $st->close();
+        }
+        if (!$manifest) {
+            http_response_code(404);
+            echo 'not found';
+            return;
+        }
+
+        $bundles = [];
+        $bq = $conn->prepare('
+            SELECT id, bundle_seq, weight_kg, length_cm, width_cm, height_cm
+            FROM uda_manifest_bundles
+            WHERE batch_id = ?
+            ORDER BY bundle_seq ASC
+        ');
+        if ($bq) {
+            $bq->bind_param('i', $manifestId);
+            $bq->execute();
+            $br = $bq->get_result();
+            while ($br && ($b = $br->fetch_assoc())) {
+                $bid = (int)($b['id'] ?? 0);
+                $wbs = [];
+                if ($bid > 0) {
+                    $wq = $conn->prepare('SELECT tracking_no FROM uda_manifest_bundle_waybills WHERE bundle_id = ? ORDER BY id ASC');
+                    if ($wq) {
+                        $wq->bind_param('i', $bid);
+                        $wq->execute();
+                        $wr = $wq->get_result();
+                        while ($wr && ($w = $wr->fetch_assoc())) {
+                            $wbs[] = (string)($w['tracking_no'] ?? '');
+                        }
+                        $wq->close();
+                    }
+                }
+                $b['waybills'] = $wbs;
+                $bundles[] = $b;
+            }
+            $bq->close();
+        }
+
+        $dateNo = trim((string)($manifest['date_no'] ?? $manifest['batch_code'] ?? ''));
+        $billNo = trim((string)($manifest['bill_no'] ?? ''));
+        $dateLine = 'DATE: ' . ($dateNo !== '' ? $dateNo : date('ymd', strtotime((string)($manifest['created_at'] ?? 'now'))));
+
+        $shipperBlock = "SHIPPERNAME:Yunda Lojistics Limited Parnership  Address:120/20, Moo 5, Tanbon Mae Hia, Amphoe Mueang ChiangMai, Chiang Mai 50100 Thailand\n"
+            . "TAX ID: 0503564006481\n"
+            . "TEL: 0947598090\n"
+            . 'EMAIL : yundacm@gmail.com';
+
+        $consigneeBlock = "CONSIGNEE NAME : Changsha Link Road International Freight Forwarding Company Limited Kunming Branch。\n"
+            . "Address：No. 101, Floor 1, Building A6, Lot A6-1-4#, Ala Street Office, Economic Development Zone, Kunming Area, China (Yunnan) Pilot Free Trade Zone, Shuntong Community Export Processing Zone \n"
+            . "CONTACT:zhugejiapeng\n"
+            . "Tel :13319533025 Mail: \n"
+            . 'USCI:91530100MA7N5CBN9C';
+
+        while (ob_get_level() > 0) {
+            ob_end_clean();
+        }
+
+        $spreadsheet = new \PhpOffice\PhpSpreadsheet\Spreadsheet();
+        $sheet = $spreadsheet->getActiveSheet();
+        $sheet->setTitle('PACKING LIST');
+
+        $thin = \PhpOffice\PhpSpreadsheet\Style\Border::BORDER_THIN;
+        $center = \PhpOffice\PhpSpreadsheet\Style\Alignment::HORIZONTAL_CENTER;
+        $left = \PhpOffice\PhpSpreadsheet\Style\Alignment::HORIZONTAL_LEFT;
+        $vCenter = \PhpOffice\PhpSpreadsheet\Style\Alignment::VERTICAL_CENTER;
+        $vTop = \PhpOffice\PhpSpreadsheet\Style\Alignment::VERTICAL_TOP;
+
+        $sheet->mergeCells('A1:H1');
+        $sheet->setCellValue('A1', 'PACKING LIST');
+        $sheet->getStyle('A1')->getFont()->setBold(true)->setSize(16);
+        $sheet->getStyle('A1')->getAlignment()->setHorizontal($center)->setVertical($vCenter);
+
+        $sheet->mergeCells('E2:H2');
+        $sheet->setCellValue('E2', $dateLine . ($billNo !== '' ? '    B/L: ' . $billNo : ''));
+        $sheet->getStyle('E2')->getAlignment()->setHorizontal(\PhpOffice\PhpSpreadsheet\Style\Alignment::HORIZONTAL_RIGHT)->setVertical($vCenter);
+
+        $sheet->mergeCells('A4:D18');
+        $sheet->setCellValue('A4', $shipperBlock);
+        $sheet->getStyle('A4')->getAlignment()->setWrapText(true)->setVertical($vTop)->setHorizontal($left);
+
+        $sheet->mergeCells('E4:H18');
+        $sheet->setCellValue('E4', $consigneeBlock);
+        $sheet->getStyle('E4')->getAlignment()->setWrapText(true)->setVertical($vTop)->setHorizontal($left);
+
+        $hdrRow = 20;
+        $headers = [
+            'No. Boxes',
+            'TRACKING NUMBER',
+            'PRODUCT DESCRIPTION',
+            'QUANTITY/PCS',
+            'WEIGHT(KG)',
+            'W. (CM.)',
+            'L. (CM.)',
+            'H. (CM.)',
+        ];
+        $sheet->fromArray($headers, null, 'A' . $hdrRow, true);
+        $sheet->getStyle('A' . $hdrRow . ':H' . $hdrRow)->getFont()->setBold(true);
+        $sheet->getStyle('A' . $hdrRow . ':H' . $hdrRow)->getAlignment()->setHorizontal($center)->setVertical($vCenter)->setWrapText(true);
+
+        $totalPcs = 0;
+        $sumGrossKg = 0.0;
+        $firstDataRow = $hdrRow + 1;
+        $row = $firstDataRow;
+        foreach ($bundles as $b) {
+            $sumGrossKg += (float)($b['weight_kg'] ?? 0);
+            $boxNo = (string)max(1, (int)($b['bundle_seq'] ?? 0));
+            $tracks = $b['waybills'] ?? [];
+            if ($tracks === []) {
+                $tracks = [''];
+            }
+            $n = count($tracks);
+            $totalPcs += $n;
+            $start = $row;
+            $end = $row + $n - 1;
+
+            $sheet->setCellValue('A' . $start, $boxNo);
+            $sheet->setCellValue('E' . $start, round((float)($b['weight_kg'] ?? 0), 2));
+            $sheet->setCellValue('F' . $start, round((float)($b['width_cm'] ?? 0), 2));
+            $sheet->setCellValue('G' . $start, round((float)($b['length_cm'] ?? 0), 2));
+            $sheet->setCellValue('H' . $start, round((float)($b['height_cm'] ?? 0), 2));
+
+            $i = 0;
+            foreach ($tracks as $tn) {
+                $r = $start + $i;
+                $sheet->setCellValue('B' . $r, $tn);
+                $sheet->setCellValue('C' . $r, '');
+                $sheet->setCellValue('D' . $r, '');
+                $sheet->getStyle('B' . $r)->getAlignment()->setHorizontal($left)->setVertical($vCenter);
+                $sheet->getStyle('C' . $r)->getAlignment()->setHorizontal($left)->setVertical($vCenter)->setWrapText(true);
+                $sheet->getStyle('D' . $r)->getAlignment()->setHorizontal($center)->setVertical($vCenter);
+                $i++;
+            }
+
+            if ($n > 1) {
+                $sheet->mergeCells('A' . $start . ':A' . $end);
+                $sheet->mergeCells('E' . $start . ':E' . $end);
+                $sheet->mergeCells('F' . $start . ':F' . $end);
+                $sheet->mergeCells('G' . $start . ':G' . $end);
+                $sheet->mergeCells('H' . $start . ':H' . $end);
+            }
+            foreach (['A', 'E', 'F', 'G', 'H'] as $col) {
+                $sheet->getStyle($col . $start . ':' . $col . $end)->getAlignment()->setHorizontal($center)->setVertical($vCenter);
+            }
+
+            $row = $end + 1;
+        }
+
+        $lastDataRow = $row - 1;
+        if ($lastDataRow < $firstDataRow) {
+            $lastDataRow = $hdrRow;
+        }
+
+        $subRow = $lastDataRow < $firstDataRow ? $firstDataRow : $lastDataRow + 1;
+        $sheet->setCellValue('D' . $subRow, $totalPcs);
+        $sheet->setCellValue('E' . $subRow, round($sumGrossKg, 2));
+        $sheet->getStyle('D' . $subRow)->getAlignment()->setHorizontal($center)->setVertical($vCenter);
+        $sheet->getStyle('E' . $subRow)->getAlignment()->setHorizontal($center)->setVertical($vCenter);
+
+        if ($subRow >= $firstDataRow) {
+            $sheet->getStyle('E' . $firstDataRow . ':E' . $subRow)->getNumberFormat()->setFormatCode('0.00');
+        }
+        if ($subRow > $firstDataRow) {
+            $sheet->getStyle('F' . $firstDataRow . ':H' . ($subRow - 1))->getNumberFormat()->setFormatCode('0.00');
+        }
+
+        $nBoxes = count($bundles);
+        $grStr = number_format($sumGrossKg, 2, '.', '');
+        $netFactor = mt_rand(80, 90) / 100.0;
+        $netKg = round($sumGrossKg * $netFactor, 2);
+        $netStr = number_format($netKg, 2, '.', '');
+        $footerText = "TOTAL:F.O.B. CHIANGMAI\n"
+            . "TOTAL: F.O.B.\n"
+            . 'QUANTITY: ' . (string)(int)$totalPcs . " PCS\n"
+            . 'NT.WT.: ' . $netStr . " KG\n"
+            . 'GR.WT. ' . $grStr . " KG\n"
+            . 'SHIPPING MARK: ' . (string)$nBoxes . ' BOXES';
+
+        $footerRow = $subRow + 2;
+        $sheet->mergeCells('A' . $footerRow . ':H' . ($footerRow + 7));
+        $sheet->setCellValue('A' . $footerRow, $footerText);
+        $sheet->getStyle('A' . $footerRow)->getAlignment()->setWrapText(true)->setVertical($vTop)->setHorizontal($left);
+
+        $borderLast = $subRow;
+        $sheet->getStyle('A' . $hdrRow . ':H' . $borderLast)->getBorders()->getAllBorders()->setBorderStyle($thin);
+
+        $sheet->getColumnDimension('A')->setWidth(10);
+        $sheet->getColumnDimension('B')->setWidth(22);
+        $sheet->getColumnDimension('C')->setWidth(36);
+        $sheet->getColumnDimension('D')->setWidth(14);
+        $sheet->getColumnDimension('E')->setWidth(12);
+        $sheet->getColumnDimension('F')->setWidth(10);
+        $sheet->getColumnDimension('G')->setWidth(10);
+        $sheet->getColumnDimension('H')->setWidth(10);
+
+        $asciiBase = 'PackingList_' . preg_replace('/[^a-zA-Z0-9_-]/', '_', $dateNo !== '' ? $dateNo : 'manifest_' . $manifestId);
+        $utf8Base = '装箱单_' . ($dateNo !== '' ? $dateNo : (string)$manifestId);
+
+        header('Content-Type: application/vnd.openxmlformats-officedocument.spreadsheetml.sheet');
+        header('Content-Disposition: attachment; filename="' . $asciiBase . '.xlsx"; filename*=UTF-8\'\'' . rawurlencode($utf8Base . '.xlsx'));
+        header('Cache-Control: max-age=0');
+
+        $writer = new \PhpOffice\PhpSpreadsheet\Writer\Xlsx($spreadsheet);
+        $writer->save('php://output');
+        $spreadsheet->disconnectWorksheets();
+        exit;
+    }
+
     public function warehouseBatchExport(): void
     {
-        if (!$this->hasAnyPermission(['menu.dispatch', 'menu.dashboard'])) {
+        if (!$this->hasAnyPermission(array_merge([
+            'menu.nav.uda.issues.list',
+            'menu.nav.uda.issues.create',
+            'menu.nav.uda.issues.locations',
+            'menu.nav.uda.issues.reasons',
+            'menu.nav.uda.issues.handle_methods',
+            'menu.nav.uda.express.query',
+            'menu.nav.uda.express.receive',
+            'menu.nav.uda.express.forward_packages',
+            'menu.nav.uda.express.forward_query',
+            'menu.nav.uda.batches.list',
+            'menu.nav.uda.batches.create',
+            'menu.nav.uda.warehouse.bundles',
+            'menu.nav.uda.warehouse.create_bundle',
+        ], ['menu.dispatch', 'menu.dashboard']))) {
             $this->denyNoPermission('无权限下载批次文档');
         }
         $conn = require __DIR__ . '/../../config/database.php';
@@ -2735,7 +3258,21 @@ class UdaController
 
     public function warehouseImportTemplate(): void
     {
-        if (!$this->hasAnyPermission(['menu.dispatch', 'menu.dashboard'])) {
+        if (!$this->hasAnyPermission(array_merge([
+            'menu.nav.uda.issues.list',
+            'menu.nav.uda.issues.create',
+            'menu.nav.uda.issues.locations',
+            'menu.nav.uda.issues.reasons',
+            'menu.nav.uda.issues.handle_methods',
+            'menu.nav.uda.express.query',
+            'menu.nav.uda.express.receive',
+            'menu.nav.uda.express.forward_packages',
+            'menu.nav.uda.express.forward_query',
+            'menu.nav.uda.batches.list',
+            'menu.nav.uda.batches.create',
+            'menu.nav.uda.warehouse.bundles',
+            'menu.nav.uda.warehouse.create_bundle',
+        ], ['menu.dispatch', 'menu.dashboard']))) {
             $this->denyNoPermission('无权限下载模板');
         }
 

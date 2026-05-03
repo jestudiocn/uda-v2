@@ -24,15 +24,20 @@ class PlaceholderController
 
     public function page(): void
     {
-        if (!$this->hasAnyPermission(['menu.dispatch', 'menu.dashboard'])) {
+        $path = parse_url($_SERVER['REQUEST_URI'] ?? '/', PHP_URL_PATH) ?: '/';
+        require_once __DIR__ . '/../Config/RouteMenuNavMap.php';
+        $keys = array_values(array_unique(array_merge(
+            ['menu.dispatch', 'menu.dashboard'],
+            RouteMenuNavMap::menuNavKeysForUri($path)
+        )));
+        if (!$this->hasAnyPermission($keys)) {
             $this->denyNoPermission('无权限访问页面');
         }
-        $path = parse_url($_SERVER['REQUEST_URI'] ?? '/', PHP_URL_PATH) ?: '/';
         $map = [
             '/dispatch/ops/delivery-list' => '派送业务 / 派送操作 / 派送列表',
             '/dispatch/ops/binding-list' => '派送业务 / 派送操作 / 绑带列表',
-            '/dispatch/ops/create-delivery' => '派送业务 / 派送操作 / 生成派送单',
-            '/dispatch/ops/delivery-docs' => '派送业务 / 派送操作 / 派送单列表',
+            '/dispatch/ops/create-delivery' => '派送业务 / 派送操作 / 分配派送单',
+            '/dispatch/ops/delivery-docs' => '派送业务 / 派送操作 / 初步派送单列表',
             '/dispatch/accounting/list' => '派送业务 / 账务处理 / 账务列表',
             '/uda/issues/list' => 'UDA快件 / 问题订单 / 问题订单列表',
             '/uda/issues/create' => 'UDA快件 / 问题订单 / 问题订单录入',

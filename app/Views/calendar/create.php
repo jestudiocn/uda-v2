@@ -17,7 +17,7 @@
 <?php endif; ?>
 
 <div class="card">
-    <form method="post" class="form-grid" style="max-width:1080px;grid-template-columns:repeat(4,minmax(170px,1fr));gap:12px;">
+    <form method="post" class="form-grid ud-calendar-form-grid" style="max-width:1080px;grid-template-columns:repeat(4,minmax(170px,1fr));gap:12px;">
         <input type="hidden" name="create_calendar_event" value="1">
         <div>
             <label><?php echo htmlspecialchars(t('calendar.start_date', '开始日期')); ?></label><br>
@@ -54,7 +54,9 @@
                         $selectedNames[] = trim((string)($user['full_name'] ?? '')) !== '' ? (string)$user['full_name'] : (string)$user['username'];
                     }
                 }
-                $summaryText = empty($selectedNames) ? '请选择成员（可多选）' : implode('、', $selectedNames);
+                $summaryText = empty($selectedNames)
+                    ? t('calendar.assignees.placeholder', '请选择成员（可多选）')
+                    : implode('、', $selectedNames);
                 ?>
                 <details style="max-width:720px;position:relative;">
                     <summary style="list-style:none;cursor:pointer;border:1px solid #d1d5db;border-radius:10px;padding:8px 10px;background:#fff;min-height:36px;display:flex;align-items:center;justify-content:space-between;gap:8px;">

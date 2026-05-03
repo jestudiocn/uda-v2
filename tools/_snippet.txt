@@ -1,0 +1,4 @@
+denyNoPermission(string $message = '无权限执行此操作'): void
+    {
+        http_response_code(403);
+        e

@@ -109,7 +109,7 @@ if (isset($_SESSION['auth_user_id'])) {
 <html lang="<?php echo htmlspecialchars($__htmlLang); ?>">
 <head>
     <meta charset="utf-8">
-    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
     <title>UDA-V2 内部管理系统</title>
     <style>
         * { box-sizing: border-box; }
@@ -123,6 +123,12 @@ if (isset($_SESSION['auth_user_id'])) {
             --topbar-h: 54px;
             --shadow: 0 6px 20px rgba(15, 23, 42, 0.06);
             --sidebar-yellow: #ffc300;
+            --ud-mobile-break: 900px;
+            --ud-layout-min: 360px;
+        }
+
+        html {
+            min-width: var(--ud-layout-min);
         }
 
         html, body {
@@ -147,7 +153,7 @@ if (isset($_SESSION['auth_user_id'])) {
             display: flex;
             align-items: center;
             justify-content: space-between;
-            padding: 0 14px;
+            padding: 0 max(14px, env(safe-area-inset-right, 0px)) 0 max(14px, env(safe-area-inset-left, 0px));
             border-bottom: 1px solid rgba(0,0,0,0.08);
             position: fixed;
             top: 0;
@@ -197,29 +203,6 @@ if (isset($_SESSION['auth_user_id'])) {
             display: block;
             opacity: 1;
             pointer-events: auto;
-        }
-        @media (max-width: 900px) {
-            .nav-burger { display: inline-flex; }
-            .sidebar {
-                width: min(288px, 88vw);
-                transform: translateX(-102%);
-                transition: transform 0.22s ease;
-                box-shadow: none;
-            }
-            body.layout-nav-open .sidebar {
-                transform: translateX(0);
-                box-shadow: 6px 0 24px rgba(0,0,0,0.12);
-            }
-            .main {
-                margin-left: 0;
-                padding: 12px;
-            }
-            .global-topbar-right {
-                flex-wrap: wrap;
-                justify-content: flex-end;
-                row-gap: 6px;
-                max-width: calc(100vw - 120px);
-            }
         }
         .global-topbar-right {
             display: flex;
@@ -479,6 +462,50 @@ if (isset($_SESSION['auth_user_id'])) {
             min-width: 0;
         }
         .main-inner { max-width: 1400px; }
+        /* 必须在 .sidebar / .main 基础规则之后，否则桌面 margin、侧栏宽度会盖过窄屏样式 */
+        @media (max-width: 900px) {
+            .nav-burger { display: inline-flex; }
+            /* 窄屏：侧栏自上「缩入」顶栏下方，展开时自顶向下铺开（非左侧抽屉） */
+            .sidebar {
+                width: 100%;
+                left: 0;
+                right: 0;
+                top: var(--topbar-h);
+                bottom: auto;
+                max-height: min(82vh, calc(100dvh - var(--topbar-h) - 8px));
+                height: auto;
+                transform: translateY(calc(-100% - 8px));
+                transition: transform 0.26s ease, box-shadow 0.2s ease;
+                box-shadow: none;
+                border-radius: 0 0 14px 14px;
+                overflow-y: auto;
+            }
+            body.layout-nav-open .sidebar {
+                transform: translateY(0);
+                box-shadow: 0 12px 28px rgba(0,0,0,0.18);
+            }
+            .main {
+                margin-left: 0;
+                padding: 12px;
+                padding-left: max(12px, env(safe-area-inset-left, 0px));
+                padding-right: max(12px, env(safe-area-inset-right, 0px));
+            }
+            .global-topbar-right {
+                flex-wrap: wrap;
+                justify-content: flex-end;
+                row-gap: 6px;
+                max-width: calc(100vw - 120px);
+            }
+            .main-inner {
+                min-width: 0;
+                max-width: 100%;
+            }
+        }
+        @media (max-width: 380px) {
+            .global-topbar-right {
+                max-width: calc(100vw - 96px);
+            }
+        }
         .wrap { width: 100%; }
 
         .card {
@@ -723,12 +750,56 @@ if (isset($_SESSION['auth_user_id'])) {
             background: #991b1b !important;
             color: #fff !important;
         }
+
+        /* ========== 移动端优先（关键流程）：表格横滚、行事历/首页月历、窄屏侧栏自上收合 ========== */
+        .ud-table-scroll {
+            overflow-x: auto;
+            -webkit-overflow-scrolling: touch;
+            max-width: 100%;
+        }
+        .ud-table-scroll table { min-width: 520px; }
+        body.ud-mp-driver-desk .ud-table-scroll table {
+            min-width: 320px;
+        }
+        .ud-calendar-month-scroll {
+            overflow-x: auto;
+            -webkit-overflow-scrolling: touch;
+            max-width: 100%;
+        }
+        @media (max-width: 900px) {
+            body.ud-mp-home .dashboard-month-grid,
+            body.ud-mp-calendar .dashboard-month-grid {
+                min-width: 720px;
+            }
+            body.ud-mp-calendar .stat-grid {
+                grid-template-columns: repeat(2, minmax(0, 1fr)) !important;
+            }
+            body.ud-mp-calendar form.ud-calendar-form-grid {
+                grid-template-columns: 1fr !important;
+            }
+            body.ud-mp-calendar form.ud-calendar-form-grid > div {
+                grid-column: 1 / -1 !important;
+            }
+        }
     </style>
 </head>
-<body>
+<?php
+$currentPath = parse_url($_SERVER['REQUEST_URI'] ?? '/', PHP_URL_PATH) ?: '/';
+$bodyLayoutClasses = ['ud-layout'];
+if ($currentPath === '/') {
+    $bodyLayoutClasses[] = 'ud-mp-home';
+}
+if (str_starts_with($currentPath, '/calendar')) {
+    $bodyLayoutClasses[] = 'ud-mp-calendar';
+}
+if ($currentPath === '/dispatch/ops/driver-deliveries' || $currentPath === '/dispatch/driver/my-deliveries') {
+    $bodyLayoutClasses[] = 'ud-mp-driver-desk';
+}
+?>
+<body class="<?php echo htmlspecialchars(implode(' ', $bodyLayoutClasses), ENT_QUOTES, 'UTF-8'); ?>">
 <div class="global-topbar">
     <div class="global-topbar-left">
-        <button type="button" class="nav-burger" id="navBurger" aria-label="打开菜单">≡</button>
+        <button type="button" class="nav-burger" id="navBurger" aria-label="<?php echo htmlspecialchars(t('nav.topbar.open_menu', '打开菜单')); ?>">≡</button>
         <span class="global-topbar-title"><?php echo htmlspecialchars(t('app.name', 'UDA-V2')); ?></span>
     </div>
     <div class="global-topbar-right">
@@ -748,14 +819,14 @@ if (isset($_SESSION['auth_user_id'])) {
             class="topbar-pending-btn <?php echo $pendingTodoCount > 0 ? 'has-pending' : ''; ?>"
             id="topbarPendingBtn"
         >
-            <span>待处理</span>
+            <span><?php echo htmlspecialchars(t('nav.topbar.pending', '待处理')); ?></span>
             <?php if ($overdueTodoCount > 0): ?>
-                <span class="topbar-overdue-dot" title="逾期事项"><?php echo htmlspecialchars((string)($overdueTodoCount > 99 ? '99+' : $overdueTodoCount)); ?></span>
+                <span class="topbar-overdue-dot" title="<?php echo htmlspecialchars(t('nav.topbar.pending_overdue_title', '逾期事项')); ?>"><?php echo htmlspecialchars((string)($overdueTodoCount > 99 ? '99+' : $overdueTodoCount)); ?></span>
             <?php endif; ?>
             <span class="topbar-pending-dot"><?php echo htmlspecialchars((string)($pendingTodoCount > 99 ? '99+' : $pendingTodoCount)); ?></span>
         </button>
         <button type="button" class="topbar-notify-btn" id="topbarNotifyBtn">
-            <span>通知</span>
+            <span><?php echo htmlspecialchars(t('nav.topbar.notify', '通知')); ?></span>
             <span class="topbar-notify-dot" id="topbarNotifyDot">0</span>
         </button>
         <a class="logout-link profile-link" href="/profile"><?php echo htmlspecialchars(t('nav.profile', '个人设置')); ?></a>
@@ -764,8 +835,10 @@ if (isset($_SESSION['auth_user_id'])) {
 </div>
 <div id="notifyToastWrap" class="notify-toast-wrap"></div>
 <?php
-$currentPath = parse_url($_SERVER['REQUEST_URI'] ?? '/', PHP_URL_PATH) ?: '/';
 $permissionScope = $_GET['scope'] ?? 'page';
+require_once __DIR__ . '/../../Config/MenuPermissionCatalog.php';
+$__udaNavKeys = MenuPermissionCatalog::udaMenuNavKeys();
+$__dispatchHubNavKeys = MenuPermissionCatalog::dispatchHubMenuNavKeys();
 ?>
 <div class="layout">
     <div class="sidebar-backdrop" id="sidebarBackdrop" aria-hidden="true"></div>
@@ -773,35 +846,35 @@ $permissionScope = $_GET['scope'] ?? 'page';
         <div class="menu">
         <?php $canDashboard = function_exists('hasPermissionKey') && hasPermissionKey('menu.dashboard'); ?>
         <?php $canCalendarMenu = function_exists('hasAnyPermissionKey') && hasAnyPermissionKey(['menu.calendar', 'menu.dashboard']); ?>
-        <?php $canCalendarCreate = function_exists('hasAnyPermissionKey') && hasAnyPermissionKey(['calendar.events.create', 'dashboard.calendar.manage']); ?>
-        <?php $canCalendarEvents = function_exists('hasAnyPermissionKey') && hasAnyPermissionKey(['calendar.events.view', 'dashboard.calendar.manage']); ?>
-        <?php $canDispatchMenu = function_exists('hasAnyPermissionKey') && hasAnyPermissionKey(['menu.dispatch', 'menu.dashboard']); ?>
-        <?php $canDispatchHub = function_exists('hasAnyPermissionKey') && hasAnyPermissionKey(['dispatch.manage', 'dispatch.consigning_clients.view', 'dispatch.delivery_customers.view', 'dispatch.waybills.view', 'dispatch.waybills.import', 'dispatch.waybills.edit']); ?>
-        <?php $canDispatchConsigning = function_exists('hasAnyPermissionKey') && hasAnyPermissionKey(['dispatch.consigning_clients.view', 'dispatch.manage']); ?>
-        <?php $canDispatchDelivery = function_exists('hasAnyPermissionKey') && hasAnyPermissionKey(['dispatch.delivery_customers.view', 'dispatch.manage']); ?>
-        <?php $canDispatchWaybills = function_exists('hasAnyPermissionKey') && hasAnyPermissionKey(['dispatch.waybills.view', 'dispatch.waybills.import', 'dispatch.manage']); ?>
-        <?php $canDispatchOrderImport = function_exists('hasAnyPermissionKey') && hasAnyPermissionKey(['dispatch.waybills.import', 'dispatch.manage']); ?>
-        <?php $canDispatchPackageOps = function_exists('hasAnyPermissionKey') && hasAnyPermissionKey(['dispatch.waybills.edit', 'dispatch.manage']); ?>
-        <?php $canDispatchForwarding = function_exists('hasAnyPermissionKey') && hasAnyPermissionKey(['dispatch.forwarding.view', 'dispatch.forwarding.package.create', 'dispatch.forwarding.customer.manage', 'dispatch.manage']); ?>
+        <?php $canCalendarCreate = function_exists('hasAnyPermissionKey') && hasAnyPermissionKey(array_merge(['menu.nav.calendar.create'], ['calendar.events.create', 'dashboard.calendar.manage'])); ?>
+        <?php $canCalendarEvents = function_exists('hasAnyPermissionKey') && hasAnyPermissionKey(array_merge(['menu.nav.calendar.events'], ['calendar.events.view', 'dashboard.calendar.manage'])); ?>
+        <?php $canDispatchMenu = function_exists('hasAnyPermissionKey') && hasAnyPermissionKey(array_merge(['menu.dispatch', 'menu.dashboard'], $__udaNavKeys, ['menu.nav.warehouse.root'])); ?>
+        <?php $canDispatchHub = function_exists('hasAnyPermissionKey') && hasAnyPermissionKey(array_merge($__dispatchHubNavKeys, ['dispatch.manage', 'dispatch.consigning_clients.view', 'dispatch.delivery_customers.view', 'dispatch.waybills.view', 'dispatch.waybills.import', 'dispatch.waybills.edit'])); ?>
+        <?php $canDispatchConsigning = function_exists('hasAnyPermissionKey') && hasAnyPermissionKey(array_merge(['menu.nav.dispatch.consigning_clients'], ['dispatch.consigning_clients.view', 'dispatch.manage'])); ?>
+        <?php $canDispatchDelivery = function_exists('hasAnyPermissionKey') && hasAnyPermissionKey(array_merge(['menu.nav.dispatch.delivery_customers'], ['dispatch.delivery_customers.view', 'dispatch.manage'])); ?>
+        <?php $canDispatchWaybills = function_exists('hasAnyPermissionKey') && hasAnyPermissionKey(array_merge(['menu.nav.dispatch.orders'], ['dispatch.waybills.view', 'dispatch.waybills.import', 'dispatch.manage'])); ?>
+        <?php $canDispatchOrderImport = function_exists('hasAnyPermissionKey') && hasAnyPermissionKey(array_merge(['menu.nav.dispatch.order_import'], ['dispatch.waybills.import', 'dispatch.manage'])); ?>
+        <?php $canDispatchPackageOps = function_exists('hasAnyPermissionKey') && hasAnyPermissionKey(array_merge(['menu.nav.dispatch.package_ops'], ['dispatch.waybills.edit', 'dispatch.manage'])); ?>
+        <?php $canDispatchForwarding = function_exists('hasAnyPermissionKey') && hasAnyPermissionKey(array_merge(['menu.nav.dispatch.forwarding.packages', 'menu.nav.dispatch.forwarding.customers', 'menu.nav.dispatch.forwarding.records'], ['dispatch.forwarding.view', 'dispatch.forwarding.package.create', 'dispatch.forwarding.customer.manage', 'dispatch.manage'])); ?>
         <?php $canFinanceMenu = function_exists('hasAnyPermissionKey') && hasAnyPermissionKey(['menu.finance', 'menu.dashboard']); ?>
-        <?php $canTransactionsCreate = function_exists('hasAnyPermissionKey') && hasAnyPermissionKey(['finance.transactions.create', 'finance.manage']); ?>
-        <?php $canTransactionsList = function_exists('hasAnyPermissionKey') && hasAnyPermissionKey(['finance.transactions.view', 'finance.manage']); ?>
-        <?php $canPayablesCreate = function_exists('hasAnyPermissionKey') && hasAnyPermissionKey(['finance.payables.create', 'finance.manage']); ?>
-        <?php $canPayablesList = function_exists('hasAnyPermissionKey') && hasAnyPermissionKey(['finance.payables.view', 'finance.manage']); ?>
-        <?php $canReceivablesCreate = function_exists('hasAnyPermissionKey') && hasAnyPermissionKey(['finance.receivables.create', 'finance.manage']); ?>
-        <?php $canReceivablesList = function_exists('hasAnyPermissionKey') && hasAnyPermissionKey(['finance.receivables.view', 'finance.manage']); ?>
-        <?php $canFinanceAccounts = function_exists('hasAnyPermissionKey') && hasAnyPermissionKey(['finance.accounts.view', 'finance.manage']); ?>
-        <?php $canFinanceCategories = function_exists('hasAnyPermissionKey') && hasAnyPermissionKey(['finance.categories.view', 'finance.manage']); ?>
-        <?php $canFinanceParties = function_exists('hasAnyPermissionKey') && hasAnyPermissionKey(['finance.parties.view', 'finance.manage']); ?>
-        <?php $canFinanceReports = function_exists('hasAnyPermissionKey') && hasAnyPermissionKey(['finance.reports.view', 'finance.manage']); ?>
-        <?php $canArCustomers = function_exists('hasAnyPermissionKey') && hasAnyPermissionKey(['finance.ar.customers', 'finance.manage']); ?>
-        <?php $canArChargesCreate = function_exists('hasAnyPermissionKey') && hasAnyPermissionKey(['finance.ar.charges.create', 'finance.manage']); ?>
-        <?php $canArChargesList = function_exists('hasAnyPermissionKey') && hasAnyPermissionKey(['finance.ar.charges.view', 'finance.manage']); ?>
-        <?php $canArInvoices = function_exists('hasAnyPermissionKey') && hasAnyPermissionKey(['finance.ar.invoices.view', 'finance.ar.invoices.create', 'finance.manage']); ?>
-        <?php $canArLedger = function_exists('hasAnyPermissionKey') && hasAnyPermissionKey(['finance.ar.ledger.view', 'finance.manage']); ?>
+        <?php $canTransactionsCreate = function_exists('hasAnyPermissionKey') && hasAnyPermissionKey(array_merge(['menu.nav.finance.transactions.create'], ['finance.transactions.create', 'finance.manage'])); ?>
+        <?php $canTransactionsList = function_exists('hasAnyPermissionKey') && hasAnyPermissionKey(array_merge(['menu.nav.finance.transactions.list'], ['finance.transactions.view', 'finance.manage'])); ?>
+        <?php $canPayablesCreate = function_exists('hasAnyPermissionKey') && hasAnyPermissionKey(array_merge(['menu.nav.finance.payables.create'], ['finance.payables.create', 'finance.manage'])); ?>
+        <?php $canPayablesList = function_exists('hasAnyPermissionKey') && hasAnyPermissionKey(array_merge(['menu.nav.finance.payables.list'], ['finance.payables.view', 'finance.manage'])); ?>
+        <?php $canReceivablesCreate = function_exists('hasAnyPermissionKey') && hasAnyPermissionKey(array_merge(['menu.nav.finance.receivables.create'], ['finance.receivables.create', 'finance.manage'])); ?>
+        <?php $canReceivablesList = function_exists('hasAnyPermissionKey') && hasAnyPermissionKey(array_merge(['menu.nav.finance.receivables.list'], ['finance.receivables.view', 'finance.manage'])); ?>
+        <?php $canFinanceAccounts = function_exists('hasAnyPermissionKey') && hasAnyPermissionKey(array_merge(['menu.nav.finance.accounts'], ['finance.accounts.view', 'finance.manage'])); ?>
+        <?php $canFinanceCategories = function_exists('hasAnyPermissionKey') && hasAnyPermissionKey(array_merge(['menu.nav.finance.categories'], ['finance.categories.view', 'finance.manage'])); ?>
+        <?php $canFinanceParties = function_exists('hasAnyPermissionKey') && hasAnyPermissionKey(array_merge(['menu.nav.finance.parties'], ['finance.parties.view', 'finance.manage'])); ?>
+        <?php $canFinanceReports = function_exists('hasAnyPermissionKey') && hasAnyPermissionKey(array_merge(['menu.nav.finance.reports'], ['finance.reports.view', 'finance.manage'])); ?>
+        <?php $canArCustomers = function_exists('hasAnyPermissionKey') && hasAnyPermissionKey(array_merge(['menu.nav.finance.ar.customers', 'menu.nav.finance.ar.billing_schemes'], ['finance.ar.customers', 'finance.manage'])); ?>
+        <?php $canArChargesCreate = function_exists('hasAnyPermissionKey') && hasAnyPermissionKey(array_merge(['menu.nav.finance.ar.charges.create'], ['finance.ar.charges.create', 'finance.manage'])); ?>
+        <?php $canArChargesList = function_exists('hasAnyPermissionKey') && hasAnyPermissionKey(array_merge(['menu.nav.finance.ar.charges.list'], ['finance.ar.charges.view', 'finance.manage'])); ?>
+        <?php $canArInvoices = function_exists('hasAnyPermissionKey') && hasAnyPermissionKey(array_merge(['menu.nav.finance.ar.invoices'], ['finance.ar.invoices.view', 'finance.ar.invoices.create', 'finance.manage'])); ?>
+        <?php $canArLedger = function_exists('hasAnyPermissionKey') && hasAnyPermissionKey(array_merge(['menu.nav.finance.ar.ledger'], ['finance.ar.ledger.view', 'finance.manage'])); ?>
         <?php $canUsers = function_exists('hasPermissionKey') && hasPermissionKey('menu.users'); ?>
         <?php $canRoles = function_exists('hasPermissionKey') && hasPermissionKey('menu.roles'); ?>
-        <?php $canPermissions = function_exists('hasAnyPermissionKey') && hasAnyPermissionKey(['menu.permissions', 'menu.roles']); ?>
+        <?php $canPermissions = function_exists('hasAnyPermissionKey') && hasAnyPermissionKey(['menu.permissions', 'menu.roles', 'menu.nav.system.permissions_page', 'menu.nav.system.permissions_action']); ?>
         <?php $canNotifications = function_exists('hasAnyPermissionKey') && hasAnyPermissionKey(['menu.notifications', 'menu.roles']); ?>
         <?php $canLogs = function_exists('hasAnyPermissionKey') && hasAnyPermissionKey(['menu.logs', 'menu.roles']); ?>
 
@@ -825,106 +898,109 @@ $permissionScope = $_GET['scope'] ?? 'page';
 
         <?php if ($canDispatchMenu && $canDispatchHub): ?>
             <button class="menu-toggle" type="button" data-target="menu-dispatch">
-                <span>派送业务</span><span class="arrow">▾</span>
+                <span><?php echo htmlspecialchars(t('nav.dispatch.root', '派送业务')); ?></span><span class="arrow">▾</span>
             </button>
             <div id="menu-dispatch" class="submenu">
                 <?php if ($canDispatchWaybills): ?>
-                    <a class="menu-link <?php echo $currentPath === '/dispatch' ? 'active' : ''; ?>" href="/dispatch">订单查询</a>
+                    <a class="menu-link <?php echo $currentPath === '/dispatch' ? 'active' : ''; ?>" href="/dispatch"><?php echo htmlspecialchars(t('nav.dispatch.orders', '订单查询')); ?></a>
                 <?php endif; ?>
                 <?php if ($canDispatchOrderImport): ?>
-                    <a class="menu-link <?php echo $currentPath === '/dispatch/order-import' ? 'active' : ''; ?>" href="/dispatch/order-import">订单导入</a>
+                    <a class="menu-link <?php echo $currentPath === '/dispatch/order-import' ? 'active' : ''; ?>" href="/dispatch/order-import"><?php echo htmlspecialchars(t('nav.dispatch.order_import', '订单导入')); ?></a>
                 <?php endif; ?>
                 <?php if ($canDispatchPackageOps): ?>
-                    <a class="menu-link <?php echo $currentPath === '/dispatch/package-ops' ? 'active' : ''; ?>" href="/dispatch/package-ops">货件操作</a>
+                    <a class="menu-link <?php echo $currentPath === '/dispatch/package-ops' ? 'active' : ''; ?>" href="/dispatch/package-ops"><?php echo htmlspecialchars(t('nav.dispatch.package_ops', '货件操作')); ?></a>
                 <?php endif; ?>
                 <?php if ($canDispatchForwarding): ?>
                     <?php $dispatchForwardingOpen = in_array($currentPath, ['/dispatch/forwarding/packages', '/dispatch/forwarding/customers', '/dispatch/forwarding/records'], true); ?>
                     <button class="sub-toggle <?php echo $dispatchForwardingOpen ? 'open' : ''; ?>" type="button" data-target="menu-dispatch-forwarding">
-                        <span>转发操作</span><span class="arrow">▾</span>
+                        <span><?php echo htmlspecialchars(t('nav.dispatch.forwarding', '转发操作')); ?></span><span class="arrow">▾</span>
                     </button>
                     <div id="menu-dispatch-forwarding" class="submenu-l3 <?php echo $dispatchForwardingOpen ? 'open' : ''; ?>">
-                        <a class="menu-link level-3 <?php echo $currentPath === '/dispatch/forwarding/packages' ? 'active' : ''; ?>" href="/dispatch/forwarding/packages">转发合包</a>
-                        <a class="menu-link level-3 <?php echo $currentPath === '/dispatch/forwarding/customers' ? 'active' : ''; ?>" href="/dispatch/forwarding/customers">客户维护</a>
-                        <a class="menu-link level-3 <?php echo $currentPath === '/dispatch/forwarding/records' ? 'active' : ''; ?>" href="/dispatch/forwarding/records">查询记录</a>
+                        <a class="menu-link level-3 <?php echo $currentPath === '/dispatch/forwarding/packages' ? 'active' : ''; ?>" href="/dispatch/forwarding/packages"><?php echo htmlspecialchars(t('nav.dispatch.forwarding.packages', '转发合包')); ?></a>
+                        <a class="menu-link level-3 <?php echo $currentPath === '/dispatch/forwarding/customers' ? 'active' : ''; ?>" href="/dispatch/forwarding/customers"><?php echo htmlspecialchars(t('nav.dispatch.forwarding.customers', '客户维护')); ?></a>
+                        <a class="menu-link level-3 <?php echo $currentPath === '/dispatch/forwarding/records' ? 'active' : ''; ?>" href="/dispatch/forwarding/records"><?php echo htmlspecialchars(t('nav.dispatch.forwarding.records', '查询记录')); ?></a>
                     </div>
                 <?php endif; ?>
                 <?php if ($canDispatchConsigning): ?>
-                    <a class="menu-link <?php echo $currentPath === '/dispatch/consigning-clients' ? 'active' : ''; ?>" href="/dispatch/consigning-clients">委托客户</a>
+                    <a class="menu-link <?php echo $currentPath === '/dispatch/consigning-clients' ? 'active' : ''; ?>" href="/dispatch/consigning-clients"><?php echo htmlspecialchars(t('nav.dispatch.consigning_clients', '委托客户')); ?></a>
                 <?php endif; ?>
                 <?php if ($canDispatchDelivery): ?>
-                    <a class="menu-link <?php echo $currentPath === '/dispatch/delivery-customers' ? 'active' : ''; ?>" href="/dispatch/delivery-customers">派送客户</a>
+                    <a class="menu-link <?php echo $currentPath === '/dispatch/delivery-customers' ? 'active' : ''; ?>" href="/dispatch/delivery-customers"><?php echo htmlspecialchars(t('nav.dispatch.delivery_customers', '派送客户')); ?></a>
                 <?php endif; ?>
-                <?php $dispatchOpsOpen = in_array($currentPath, ['/dispatch/ops/delivery-list', '/dispatch/ops/binding-list', '/dispatch/ops/create-delivery', '/dispatch/ops/delivery-docs'], true); ?>
+                <?php $dispatchOpsOpen = in_array($currentPath, ['/dispatch/ops/delivery-list', '/dispatch/ops/binding-list', '/dispatch/ops/create-delivery', '/dispatch/ops/delivery-docs', '/dispatch/ops/formal-delivery-docs', '/dispatch/ops/delivery-pick-sheets', '/dispatch/ops/driver-deliveries', '/dispatch/driver/my-deliveries'], true); ?>
                 <button class="sub-toggle <?php echo $dispatchOpsOpen ? 'open' : ''; ?>" type="button" data-target="menu-dispatch-ops">
-                    <span>派送操作</span><span class="arrow">▾</span>
+                    <span><?php echo htmlspecialchars(t('nav.dispatch.ops', '派送操作')); ?></span><span class="arrow">▾</span>
                 </button>
                 <div id="menu-dispatch-ops" class="submenu-l3 <?php echo $dispatchOpsOpen ? 'open' : ''; ?>">
-                    <a class="menu-link level-3 <?php echo $currentPath === '/dispatch/ops/delivery-list' ? 'active' : ''; ?>" href="/dispatch/ops/delivery-list">派送列表</a>
-                    <a class="menu-link level-3 <?php echo $currentPath === '/dispatch/ops/binding-list' ? 'active' : ''; ?>" href="/dispatch/ops/binding-list">绑带列表</a>
-                    <a class="menu-link level-3 <?php echo $currentPath === '/dispatch/ops/create-delivery' ? 'active' : ''; ?>" href="/dispatch/ops/create-delivery">生成派送单</a>
-                    <a class="menu-link level-3 <?php echo $currentPath === '/dispatch/ops/delivery-docs' ? 'active' : ''; ?>" href="/dispatch/ops/delivery-docs">派送单列表</a>
+                    <a class="menu-link level-3 <?php echo $currentPath === '/dispatch/ops/delivery-list' ? 'active' : ''; ?>" href="/dispatch/ops/delivery-list"><?php echo htmlspecialchars(t('nav.dispatch.ops.delivery_list', '派送列表')); ?></a>
+                    <a class="menu-link level-3 <?php echo $currentPath === '/dispatch/ops/binding-list' ? 'active' : ''; ?>" href="/dispatch/ops/binding-list"><?php echo htmlspecialchars(t('nav.dispatch.ops.binding_list', '绑带列表')); ?></a>
+                    <a class="menu-link level-3 <?php echo $currentPath === '/dispatch/ops/create-delivery' ? 'active' : ''; ?>" href="/dispatch/ops/create-delivery"><?php echo htmlspecialchars(t('nav.dispatch.ops.create_delivery', '分配派送单')); ?></a>
+                    <a class="menu-link level-3 <?php echo $currentPath === '/dispatch/ops/delivery-docs' ? 'active' : ''; ?>" href="/dispatch/ops/delivery-docs"><?php echo htmlspecialchars(t('nav.dispatch.ops.preliminary_docs', '初步派送单列表')); ?></a>
+                    <a class="menu-link level-3 <?php echo $currentPath === '/dispatch/ops/formal-delivery-docs' ? 'active' : ''; ?>" href="/dispatch/ops/formal-delivery-docs"><?php echo htmlspecialchars(t('nav.dispatch.ops.formal_docs', '正式派送单列表')); ?></a>
+                    <a class="menu-link level-3 <?php echo $currentPath === '/dispatch/ops/delivery-pick-sheets' ? 'active' : ''; ?>" href="/dispatch/ops/delivery-pick-sheets"><?php echo htmlspecialchars(t('nav.dispatch.ops.pick_sheets', '派送单拣货表')); ?></a>
+                    <a class="menu-link level-3 <?php echo in_array($currentPath, ['/dispatch/ops/driver-deliveries', '/dispatch/driver/my-deliveries'], true) ? 'active' : ''; ?>" href="/dispatch/ops/driver-deliveries"><?php echo htmlspecialchars(t('nav.dispatch.ops.driver', '司机派送')); ?></a>
                 </div>
 
                 <?php $dispatchAccountingOpen = ($currentPath === '/dispatch/accounting/list'); ?>
                 <button class="sub-toggle <?php echo $dispatchAccountingOpen ? 'open' : ''; ?>" type="button" data-target="menu-dispatch-accounting">
-                    <span>账务处理</span><span class="arrow">▾</span>
+                    <span><?php echo htmlspecialchars(t('nav.dispatch.accounting', '账务处理')); ?></span><span class="arrow">▾</span>
                 </button>
                 <div id="menu-dispatch-accounting" class="submenu-l3 <?php echo $dispatchAccountingOpen ? 'open' : ''; ?>">
-                    <a class="menu-link level-3 <?php echo $currentPath === '/dispatch/accounting/list' ? 'active' : ''; ?>" href="/dispatch/accounting/list">账务列表</a>
+                    <a class="menu-link level-3 <?php echo $currentPath === '/dispatch/accounting/list' ? 'active' : ''; ?>" href="/dispatch/accounting/list"><?php echo htmlspecialchars(t('nav.dispatch.accounting.list', '账务列表')); ?></a>
                 </div>
             </div>
         <?php endif; ?>
 
         <?php if ($canDispatchMenu): ?>
             <button class="menu-toggle" type="button" data-target="menu-uda-express">
-                <span>UDA快件</span><span class="arrow">▾</span>
+                <span><?php echo htmlspecialchars(t('nav.uda.root', 'UDA快件')); ?></span><span class="arrow">▾</span>
             </button>
             <div id="menu-uda-express" class="submenu">
                 <?php $udaIssueOpen = in_array($currentPath, ['/uda/issues/list', '/uda/issues/create', '/uda/issues/handle-methods', '/uda/issues/locations', '/uda/issues/reasons'], true); ?>
                 <button class="sub-toggle <?php echo $udaIssueOpen ? 'open' : ''; ?>" type="button" data-target="menu-uda-issue">
-                    <span>问题订单</span><span class="arrow">▾</span>
+                    <span><?php echo htmlspecialchars(t('nav.uda.issues', '问题订单')); ?></span><span class="arrow">▾</span>
                 </button>
                 <div id="menu-uda-issue" class="submenu-l3 <?php echo $udaIssueOpen ? 'open' : ''; ?>">
-                    <a class="menu-link level-3 <?php echo $currentPath === '/uda/issues/list' ? 'active' : ''; ?>" href="/uda/issues/list">问题订单列表</a>
-                    <a class="menu-link level-3 <?php echo $currentPath === '/uda/issues/create' ? 'active' : ''; ?>" href="/uda/issues/create">问题订单录入</a>
-                    <a class="menu-link level-3 <?php echo $currentPath === '/uda/issues/locations' ? 'active' : ''; ?>" href="/uda/issues/locations">地点管理</a>
-                    <a class="menu-link level-3 <?php echo $currentPath === '/uda/issues/reasons' ? 'active' : ''; ?>" href="/uda/issues/reasons">问题原因管理</a>
-                    <a class="menu-link level-3 <?php echo $currentPath === '/uda/issues/handle-methods' ? 'active' : ''; ?>" href="/uda/issues/handle-methods">处理方式管理</a>
+                    <a class="menu-link level-3 <?php echo $currentPath === '/uda/issues/list' ? 'active' : ''; ?>" href="/uda/issues/list"><?php echo htmlspecialchars(t('nav.uda.issues.list', '问题订单列表')); ?></a>
+                    <a class="menu-link level-3 <?php echo $currentPath === '/uda/issues/create' ? 'active' : ''; ?>" href="/uda/issues/create"><?php echo htmlspecialchars(t('nav.uda.issues.create', '问题订单录入')); ?></a>
+                    <a class="menu-link level-3 <?php echo $currentPath === '/uda/issues/locations' ? 'active' : ''; ?>" href="/uda/issues/locations"><?php echo htmlspecialchars(t('nav.uda.issues.locations', '地点管理')); ?></a>
+                    <a class="menu-link level-3 <?php echo $currentPath === '/uda/issues/reasons' ? 'active' : ''; ?>" href="/uda/issues/reasons"><?php echo htmlspecialchars(t('nav.uda.issues.reasons', '问题原因管理')); ?></a>
+                    <a class="menu-link level-3 <?php echo $currentPath === '/uda/issues/handle-methods' ? 'active' : ''; ?>" href="/uda/issues/handle-methods"><?php echo htmlspecialchars(t('nav.uda.issues.handle_methods', '处理方式管理')); ?></a>
                 </div>
 
                 <?php $udaExpressOpen = in_array($currentPath, ['/uda/express/query', '/uda/express/receive', '/uda/express/forward-packages', '/uda/express/forward-query'], true); ?>
                 <button class="sub-toggle <?php echo $udaExpressOpen ? 'open' : ''; ?>" type="button" data-target="menu-uda-express-sub">
-                    <span>快件收发</span><span class="arrow">▾</span>
+                    <span><?php echo htmlspecialchars(t('nav.uda.express', '快件收发')); ?></span><span class="arrow">▾</span>
                 </button>
                 <div id="menu-uda-express-sub" class="submenu-l3 <?php echo $udaExpressOpen ? 'open' : ''; ?>">
-                    <a class="menu-link level-3 <?php echo $currentPath === '/uda/express/query' ? 'active' : ''; ?>" href="/uda/express/query">快件查询</a>
-                    <a class="menu-link level-3 <?php echo $currentPath === '/uda/express/receive' ? 'active' : ''; ?>" href="/uda/express/receive">收件录入</a>
-                    <a class="menu-link level-3 <?php echo $currentPath === '/uda/express/forward-packages' ? 'active' : ''; ?>" href="/uda/express/forward-packages">转发合包</a>
-                    <a class="menu-link level-3 <?php echo $currentPath === '/uda/express/forward-query' ? 'active' : ''; ?>" href="/uda/express/forward-query">转发查询</a>
+                    <a class="menu-link level-3 <?php echo $currentPath === '/uda/express/query' ? 'active' : ''; ?>" href="/uda/express/query"><?php echo htmlspecialchars(t('nav.uda.express.query', '快件查询')); ?></a>
+                    <a class="menu-link level-3 <?php echo $currentPath === '/uda/express/receive' ? 'active' : ''; ?>" href="/uda/express/receive"><?php echo htmlspecialchars(t('nav.uda.express.receive', '收件录入')); ?></a>
+                    <a class="menu-link level-3 <?php echo $currentPath === '/uda/express/forward-packages' ? 'active' : ''; ?>" href="/uda/express/forward-packages"><?php echo htmlspecialchars(t('nav.uda.express.forward_packages', '转发合包')); ?></a>
+                    <a class="menu-link level-3 <?php echo $currentPath === '/uda/express/forward-query' ? 'active' : ''; ?>" href="/uda/express/forward-query"><?php echo htmlspecialchars(t('nav.uda.express.forward_query', '转发查询')); ?></a>
                 </div>
 
-                <?php $udaBatchOpen = in_array($currentPath, ['/uda/batches/list', '/uda/batches/create', '/uda/batches/edit'], true); ?>
+                <?php $udaBatchOpen = in_array($currentPath, ['/uda/batches/list', '/uda/batches/create', '/uda/batches/edit', '/uda/batches/packing-list-export'], true); ?>
                 <button class="sub-toggle <?php echo $udaBatchOpen ? 'open' : ''; ?>" type="button" data-target="menu-uda-batches">
-                    <span>仓内操作</span><span class="arrow">▾</span>
+                    <span><?php echo htmlspecialchars(t('nav.uda.warehouse_ops', '仓内操作')); ?></span><span class="arrow">▾</span>
                 </button>
                 <div id="menu-uda-batches" class="submenu-l3 <?php echo $udaBatchOpen ? 'open' : ''; ?>">
-                    <a class="menu-link level-3 <?php echo $currentPath === '/uda/batches/list' ? 'active' : ''; ?>" href="/uda/batches/list">集包列表</a>
-                    <a class="menu-link level-3 <?php echo $currentPath === '/uda/batches/create' ? 'active' : ''; ?>" href="/uda/batches/create">集包录入</a>
+                    <a class="menu-link level-3 <?php echo $currentPath === '/uda/batches/list' ? 'active' : ''; ?>" href="/uda/batches/list"><?php echo htmlspecialchars(t('nav.uda.batches.list', '集包列表')); ?></a>
+                    <a class="menu-link level-3 <?php echo $currentPath === '/uda/batches/create' ? 'active' : ''; ?>" href="/uda/batches/create"><?php echo htmlspecialchars(t('nav.uda.batches.create', '集包录入')); ?></a>
                 </div>
 
                 <?php $udaWarehouseOpen = in_array($currentPath, ['/uda/warehouse/bundles', '/uda/warehouse/create-bundle', '/uda/warehouse/batch-view', '/uda/warehouse/batch-edit'], true); ?>
                 <button class="sub-toggle <?php echo $udaWarehouseOpen ? 'open' : ''; ?>" type="button" data-target="menu-uda-warehouse">
-                    <span>批次操作</span><span class="arrow">▾</span>
+                    <span><?php echo htmlspecialchars(t('nav.uda.batch_ops', '批次操作')); ?></span><span class="arrow">▾</span>
                 </button>
                 <div id="menu-uda-warehouse" class="submenu-l3 <?php echo $udaWarehouseOpen ? 'open' : ''; ?>">
-                    <a class="menu-link level-3 <?php echo $currentPath === '/uda/warehouse/bundles' ? 'active' : ''; ?>" href="/uda/warehouse/bundles">批次列表</a>
-                    <a class="menu-link level-3 <?php echo $currentPath === '/uda/warehouse/create-bundle' ? 'active' : ''; ?>" href="/uda/warehouse/create-bundle">批次录入</a>
+                    <a class="menu-link level-3 <?php echo $currentPath === '/uda/warehouse/bundles' ? 'active' : ''; ?>" href="/uda/warehouse/bundles"><?php echo htmlspecialchars(t('nav.uda.warehouse.bundles', '批次列表')); ?></a>
+                    <a class="menu-link level-3 <?php echo $currentPath === '/uda/warehouse/create-bundle' ? 'active' : ''; ?>" href="/uda/warehouse/create-bundle"><?php echo htmlspecialchars(t('nav.uda.warehouse.create_bundle', '批次录入')); ?></a>
                 </div>
             </div>
         <?php endif; ?>
 
         <?php if ($canDispatchMenu): ?>
-            <a class="menu-link <?php echo $currentPath === '/warehouse' ? 'active' : ''; ?>" href="/warehouse">仓储管理</a>
+            <a class="menu-link <?php echo $currentPath === '/warehouse' ? 'active' : ''; ?>" href="/warehouse"><?php echo htmlspecialchars(t('nav.warehouse', '仓储管理')); ?></a>
         <?php endif; ?>
 
         <?php
@@ -936,92 +1012,92 @@ $permissionScope = $_GET['scope'] ?? 'page';
         ?>
         <?php if ($canFinanceMenu && ($canTransactionsCreate || $canTransactionsList || $canPayablesCreate || $canPayablesList || $canReceivablesCreate || $canReceivablesList || $canFinanceAccounts || $canFinanceCategories || $canFinanceParties || $canFinanceReports || $canArCustomers || $canArChargesCreate || $canArChargesList || $canArInvoices || $canArLedger)): ?>
             <button class="menu-toggle" type="button" data-target="menu-finance">
-                <span>财务管理</span><span class="arrow">▾</span>
+                <span><?php echo htmlspecialchars(t('nav.finance.root', '财务管理')); ?></span><span class="arrow">▾</span>
             </button>
             <div id="menu-finance" class="submenu">
                 <?php if ($canTransactionsCreate || $canTransactionsList): ?>
                     <button class="sub-toggle <?php echo $financeRecordsOpen ? 'open' : ''; ?>" type="button" data-target="menu-finance-records">
-                        <span>财务记录</span><span class="arrow">▾</span>
+                        <span><?php echo htmlspecialchars(t('nav.finance.records', '财务记录')); ?></span><span class="arrow">▾</span>
                     </button>
                     <div id="menu-finance-records" class="submenu-l3 <?php echo $financeRecordsOpen ? 'open' : ''; ?>">
                         <?php if ($canTransactionsCreate): ?>
-                            <a class="menu-link level-3 <?php echo $currentPath === '/finance/transactions/create' ? 'active' : ''; ?>" href="/finance/transactions/create">新增财务记录</a>
+                            <a class="menu-link level-3 <?php echo $currentPath === '/finance/transactions/create' ? 'active' : ''; ?>" href="/finance/transactions/create"><?php echo htmlspecialchars(t('nav.finance.transactions.create', '新增财务记录')); ?></a>
                         <?php endif; ?>
                         <?php if ($canTransactionsList): ?>
-                            <a class="menu-link level-3 <?php echo $currentPath === '/finance/transactions/list' || $currentPath === '/finance/transactions/edit' ? 'active' : ''; ?>" href="/finance/transactions/list">财务记录列表</a>
+                            <a class="menu-link level-3 <?php echo $currentPath === '/finance/transactions/list' || $currentPath === '/finance/transactions/edit' ? 'active' : ''; ?>" href="/finance/transactions/list"><?php echo htmlspecialchars(t('nav.finance.transactions.list', '财务记录列表')); ?></a>
                         <?php endif; ?>
                     </div>
                 <?php endif; ?>
 
                 <?php if ($canPayablesCreate || $canPayablesList): ?>
                     <button class="sub-toggle <?php echo $financePayablesOpen ? 'open' : ''; ?>" type="button" data-target="menu-finance-payables">
-                        <span>待付款</span><span class="arrow">▾</span>
+                        <span><?php echo htmlspecialchars(t('nav.finance.payables', '待付款')); ?></span><span class="arrow">▾</span>
                     </button>
                     <div id="menu-finance-payables" class="submenu-l3 <?php echo $financePayablesOpen ? 'open' : ''; ?>">
                         <?php if ($canPayablesCreate): ?>
-                            <a class="menu-link level-3 <?php echo $currentPath === '/finance/payables/create' ? 'active' : ''; ?>" href="/finance/payables/create">新增待付款</a>
+                            <a class="menu-link level-3 <?php echo $currentPath === '/finance/payables/create' ? 'active' : ''; ?>" href="/finance/payables/create"><?php echo htmlspecialchars(t('nav.finance.payables.create', '新增待付款')); ?></a>
                         <?php endif; ?>
                         <?php if ($canPayablesList): ?>
-                            <a class="menu-link level-3 <?php echo $currentPath === '/finance/payables/list' || $currentPath === '/finance/payables/settle' ? 'active' : ''; ?>" href="/finance/payables/list">待付款列表</a>
+                            <a class="menu-link level-3 <?php echo $currentPath === '/finance/payables/list' || $currentPath === '/finance/payables/settle' ? 'active' : ''; ?>" href="/finance/payables/list"><?php echo htmlspecialchars(t('nav.finance.payables.list', '待付款列表')); ?></a>
                         <?php endif; ?>
                     </div>
                 <?php endif; ?>
 
                 <?php if ($canReceivablesCreate || $canReceivablesList): ?>
                     <button class="sub-toggle <?php echo $financeReceivablesOpen ? 'open' : ''; ?>" type="button" data-target="menu-finance-receivables">
-                        <span>待收款</span><span class="arrow">▾</span>
+                        <span><?php echo htmlspecialchars(t('nav.finance.receivables', '待收款')); ?></span><span class="arrow">▾</span>
                     </button>
                     <div id="menu-finance-receivables" class="submenu-l3 <?php echo $financeReceivablesOpen ? 'open' : ''; ?>">
                         <?php if ($canReceivablesCreate): ?>
-                            <a class="menu-link level-3 <?php echo $currentPath === '/finance/receivables/create' ? 'active' : ''; ?>" href="/finance/receivables/create">新增待收款</a>
+                            <a class="menu-link level-3 <?php echo $currentPath === '/finance/receivables/create' ? 'active' : ''; ?>" href="/finance/receivables/create"><?php echo htmlspecialchars(t('nav.finance.receivables.create', '新增待收款')); ?></a>
                         <?php endif; ?>
                         <?php if ($canReceivablesList): ?>
-                            <a class="menu-link level-3 <?php echo $currentPath === '/finance/receivables/list' || $currentPath === '/finance/receivables/settle' ? 'active' : ''; ?>" href="/finance/receivables/list">待收款列表</a>
+                            <a class="menu-link level-3 <?php echo $currentPath === '/finance/receivables/list' || $currentPath === '/finance/receivables/settle' ? 'active' : ''; ?>" href="/finance/receivables/list"><?php echo htmlspecialchars(t('nav.finance.receivables.list', '待收款列表')); ?></a>
                         <?php endif; ?>
                     </div>
                 <?php endif; ?>
 
                 <?php if ($canFinanceReports): ?>
-                    <a class="menu-link <?php echo $currentPath === '/finance/reports/overview' || $currentPath === '/finance/reports/detail' ? 'active' : ''; ?>" href="/finance/reports/overview">财务报表</a>
+                    <a class="menu-link <?php echo $currentPath === '/finance/reports/overview' || $currentPath === '/finance/reports/detail' ? 'active' : ''; ?>" href="/finance/reports/overview"><?php echo htmlspecialchars(t('nav.finance.reports', '财务报表')); ?></a>
                 <?php endif; ?>
 
                 <?php if ($canArCustomers || $canArChargesCreate || $canArChargesList || $canArInvoices || $canArLedger): ?>
                     <button class="sub-toggle <?php echo $financeArOpen ? 'open' : ''; ?>" type="button" data-target="menu-finance-ar">
-                        <span>应收账单</span><span class="arrow">▾</span>
+                        <span><?php echo htmlspecialchars(t('nav.finance.ar', '应收账单')); ?></span><span class="arrow">▾</span>
                     </button>
                     <div id="menu-finance-ar" class="submenu-l3 <?php echo $financeArOpen ? 'open' : ''; ?>">
                         <?php if ($canArCustomers): ?>
-                            <a class="menu-link level-3 <?php echo $currentPath === '/finance/ar/customers' ? 'active' : ''; ?>" href="/finance/ar/customers">客户计费档案</a>
-                            <a class="menu-link level-3 <?php echo $currentPath === '/finance/ar/billing-schemes' ? 'active' : ''; ?>" href="/finance/ar/billing-schemes">计费方式维护</a>
+                            <a class="menu-link level-3 <?php echo $currentPath === '/finance/ar/customers' ? 'active' : ''; ?>" href="/finance/ar/customers"><?php echo htmlspecialchars(t('nav.finance.ar.customers', '客户计费档案')); ?></a>
+                            <a class="menu-link level-3 <?php echo $currentPath === '/finance/ar/billing-schemes' ? 'active' : ''; ?>" href="/finance/ar/billing-schemes"><?php echo htmlspecialchars(t('nav.finance.ar.billing_schemes', '计费方式维护')); ?></a>
                         <?php endif; ?>
                         <?php if ($canArChargesCreate): ?>
-                            <a class="menu-link level-3 <?php echo $currentPath === '/finance/ar/charges/create' ? 'active' : ''; ?>" href="/finance/ar/charges/create">新增费用记录</a>
+                            <a class="menu-link level-3 <?php echo $currentPath === '/finance/ar/charges/create' ? 'active' : ''; ?>" href="/finance/ar/charges/create"><?php echo htmlspecialchars(t('nav.finance.ar.charges.create', '新增费用记录')); ?></a>
                         <?php endif; ?>
                         <?php if ($canArChargesList): ?>
-                            <a class="menu-link level-3 <?php echo $currentPath === '/finance/ar/charges/list' ? 'active' : ''; ?>" href="/finance/ar/charges/list">费用记录列表</a>
+                            <a class="menu-link level-3 <?php echo $currentPath === '/finance/ar/charges/list' ? 'active' : ''; ?>" href="/finance/ar/charges/list"><?php echo htmlspecialchars(t('nav.finance.ar.charges.list', '费用记录列表')); ?></a>
                         <?php endif; ?>
                         <?php if ($canArInvoices): ?>
-                            <a class="menu-link level-3 <?php echo $currentPath === '/finance/ar/invoices/list' || $currentPath === '/finance/ar/invoices/view' ? 'active' : ''; ?>" href="/finance/ar/invoices/list">账单列表</a>
+                            <a class="menu-link level-3 <?php echo $currentPath === '/finance/ar/invoices/list' || $currentPath === '/finance/ar/invoices/view' ? 'active' : ''; ?>" href="/finance/ar/invoices/list"><?php echo htmlspecialchars(t('nav.finance.ar.invoices', '账单列表')); ?></a>
                         <?php endif; ?>
                         <?php if ($canArLedger): ?>
-                            <a class="menu-link level-3 <?php echo $currentPath === '/finance/ar/ledger' ? 'active' : ''; ?>" href="/finance/ar/ledger">应收台账</a>
+                            <a class="menu-link level-3 <?php echo $currentPath === '/finance/ar/ledger' ? 'active' : ''; ?>" href="/finance/ar/ledger"><?php echo htmlspecialchars(t('nav.finance.ar.ledger', '应收台账')); ?></a>
                         <?php endif; ?>
                     </div>
                 <?php endif; ?>
 
                 <?php if ($canFinanceAccounts || $canFinanceCategories || $canFinanceParties): ?>
                     <button class="sub-toggle <?php echo $financeMaintenanceOpen ? 'open' : ''; ?>" type="button" data-target="menu-finance-maintenance">
-                        <span>财务管理维护</span><span class="arrow">▾</span>
+                        <span><?php echo htmlspecialchars(t('nav.finance.maintenance', '财务管理维护')); ?></span><span class="arrow">▾</span>
                     </button>
                     <div id="menu-finance-maintenance" class="submenu-l3 <?php echo $financeMaintenanceOpen ? 'open' : ''; ?>">
                         <?php if ($canFinanceAccounts): ?>
-                            <a class="menu-link level-3 <?php echo $currentPath === '/finance/accounts' ? 'active' : ''; ?>" href="/finance/accounts">账户管理</a>
+                            <a class="menu-link level-3 <?php echo $currentPath === '/finance/accounts' ? 'active' : ''; ?>" href="/finance/accounts"><?php echo htmlspecialchars(t('nav.finance.accounts', '账户管理')); ?></a>
                         <?php endif; ?>
                         <?php if ($canFinanceCategories): ?>
-                            <a class="menu-link level-3 <?php echo $currentPath === '/finance/categories' ? 'active' : ''; ?>" href="/finance/categories">类目管理</a>
+                            <a class="menu-link level-3 <?php echo $currentPath === '/finance/categories' ? 'active' : ''; ?>" href="/finance/categories"><?php echo htmlspecialchars(t('nav.finance.categories', '类目管理')); ?></a>
                         <?php endif; ?>
                         <?php if ($canFinanceParties): ?>
-                            <a class="menu-link level-3 <?php echo $currentPath === '/finance/parties' ? 'active' : ''; ?>" href="/finance/parties">收付款对象管理</a>
+                            <a class="menu-link level-3 <?php echo $currentPath === '/finance/parties' ? 'active' : ''; ?>" href="/finance/parties"><?php echo htmlspecialchars(t('nav.finance.parties', '收付款对象管理')); ?></a>
                         <?php endif; ?>
                     </div>
                 <?php endif; ?>

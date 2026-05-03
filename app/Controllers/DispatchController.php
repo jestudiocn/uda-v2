@@ -1,6 +1,8 @@
 <?php
 require_once __DIR__ . '/Concerns/AuditLogTrait.php';
 require_once __DIR__ . '/../Lib/DeliveryAddressLines.php';
+require_once __DIR__ . '/../Lib/DeliveryCustomerImportSheet.php';
+require_once __DIR__ . '/../Lib/OrderImportSheet.php';
 
 /**
  * 派送业务：委托客户、派送客户（收件人）、面单（一原始面单一行）。
@@ -19,9 +21,12 @@ class DispatchController
         $this->writeStandardAuditLog($conn, $moduleKey, $actionKey, $targetType, $targetId, $detail);
     }
 
-    private function denyNoPermission(string $message = '无权限执行此操作'): void
+    private function denyNoPermission(string $message = ''): void
     {
         http_response_code(403);
+        if ($message === '') {
+            $message = t('dispatch.str.0052', '无权限执行此操作');
+        }
         echo $message;
         exit;
     }
@@ -41,7 +46,13 @@ class DispatchController
 
     private function requireDispatchMenu(): void
     {
-        if (!$this->hasAnyPermission(['menu.dispatch', 'menu.dashboard'])) {
+        require_once __DIR__ . '/../Config/MenuPermissionCatalog.php';
+        $navKeys = array_merge(
+            MenuPermissionCatalog::dispatchHubMenuNavKeys(),
+            MenuPermissionCatalog::udaMenuNavKeys(),
+            ['menu.nav.warehouse.root']
+        );
+        if (!$this->hasAnyPermission(array_merge(['menu.dispatch', 'menu.dashboard'], $navKeys))) {
             $this->denyNoPermission('无权限访问派送模块');
         }
     }
@@ -154,6 +165,84 @@ class DispatchController
         if (!$this->columnExists($conn, 'dispatch_waybills', 'order_status')) {
             throw new RuntimeException('订单扩展字段未建立，请先执行 migration：022_dispatch_waybill_order_fields.sql');
         }
+        $this->ensureDispatchWaybillBindingCompletedAt($conn);
+    }
+
+    /** 绑带列表「完成」标记：与扫描写入的 delivered_at 解耦，避免无法再次进列表 */
+    private function ensureDispatchWaybillBindingCompletedAt(mysqli $conn): void
+    {
+        if (!$this->columnExists($conn, 'dispatch_waybills', 'binding_completed_at')) {
+            $conn->query('ALTER TABLE dispatch_waybills ADD COLUMN binding_completed_at DATETIME NULL DEFAULT NULL COMMENT \'绑带列表完成\' AFTER delivered_at');
+        }
+    }
+
+    /** 司机上传签收写入：派送司机姓名（列表不展示，已派送弹窗用） */
+    private function ensureDispatchWaybillDeliveryDriverName(mysqli $conn): void
+    {
+        if (!$this->columnExists($conn, 'dispatch_waybills', 'delivery_driver_name')) {
+            $conn->query("ALTER TABLE dispatch_waybills ADD COLUMN delivery_driver_name VARCHAR(120) NULL DEFAULT NULL COMMENT '司机上传签收时写入' AFTER order_status");
+        }
+    }
+
+    /**
+     * 订单状态写入绑带列表三态时，追加 SET 片段以清除「绑带完成」时间（单行 UPDATE 用）。
+     *
+     * @return string '', 或 ', binding_completed_at = NULL'
+     */
+    private function sqlClearBindingCompletedForBindingListStatuses(mysqli $conn, string $newStatus): string
+    {
+        if (!$this->columnExists($conn, 'dispatch_waybills', 'binding_completed_at')) {
+            return '';
+        }
+        $newStatus = trim($newStatus);
+        if (!in_array($newStatus, ['已入库', '待转发', '待自取'], true)) {
+            return '';
+        }
+        return ', binding_completed_at = NULL';
+    }
+
+    /**
+     * 绑带列表「再次统计整票」：同一派送客户下，凡处于三态的运单及本次触发的运单行，一律清除 binding_completed_at。
+     * 否则仅清除当前扫描/导入行时，同客户其它已点「完成」但仍为三态的货件仍被排除，列表数量会少计。
+     */
+    private function reopenBindingListWaybillsForDeliveryCustomer(
+        mysqli $conn,
+        int $consigningClientId,
+        int $deliveryCustomerId,
+        string $customerCodeTrim,
+        int $touchedWaybillId
+    ): void {
+        if (!$this->columnExists($conn, 'dispatch_waybills', 'binding_completed_at')) {
+            return;
+        }
+        if ($consigningClientId <= 0 || $deliveryCustomerId <= 0) {
+            return;
+        }
+        $code = trim($customerCodeTrim);
+        $sql = "
+            UPDATE dispatch_waybills
+            SET binding_completed_at = NULL
+            WHERE consigning_client_id = ?
+              AND (
+                  delivery_customer_id = ?
+                  OR (delivery_customer_id IS NULL AND TRIM(COALESCE(delivery_customer_code, '')) = ?)
+              )
+              AND (
+                  COALESCE(order_status, '') IN ('已入库', '待转发', '待自取')
+                  OR id = ?
+              )
+        ";
+        $st = $conn->prepare($sql);
+        if (!$st) {
+            return;
+        }
+        $st->bind_param('iisi', $consigningClientId, $deliveryCustomerId, $code, $touchedWaybillId);
+        try {
+            $st->execute();
+        } catch (Throwable $e) {
+            // 不因次要清理失败阻断扫描主流程
+        }
+        $st->close();
     }
 
     /** @return list<string> */
@@ -225,6 +314,271 @@ class DispatchController
     {
         $s = trim((string)$raw);
         return in_array($s, $this->deliveryCustomerStateCatalog(), true) ? $s : '正常';
+    }
+
+    /** 业务状态为「异常 / 暂停」时：不入可派送列表、并从仅初步阶段的派送单解绑已入库运单；正式分段后司机端禁传签收照。 */
+    private function deliveryCustomerBusinessStateIsRestricted(string $state): bool
+    {
+        $s = trim($state);
+        return $s === '异常' || $s === '暂停';
+    }
+
+    /**
+     * 解绑派送单号时，同步把运单标回「已入库」并清理与扫描/绑带相关的时间戳（片段不含前导逗号）。
+     */
+    private function waybillSqlFragmentResetInboundOnDeliveryDocUnbind(mysqli $conn): string
+    {
+        $frag = '';
+        if ($this->columnExists($conn, 'dispatch_waybills', 'order_status')) {
+            $frag .= ", order_status = '已入库'";
+        }
+        if ($this->columnExists($conn, 'dispatch_waybills', 'delivered_at')) {
+            $frag .= ', delivered_at = NULL';
+        }
+        if ($this->columnExists($conn, 'dispatch_waybills', 'binding_completed_at')) {
+            $frag .= ', binding_completed_at = NULL';
+        }
+
+        return $frag;
+    }
+
+    /**
+     * 客户业务状态为「异常 / 暂停」时：将该派送客户下、仍绑定派送单号且非「已派送」的运单全部解绑回池并标为已入库；
+     * 对涉及的每个派送单号刷新停靠点（与初步/正式无关）。
+     */
+    private function detachInboundWaybillsFromPreliminaryDispatchForDeliveryCustomer(
+        mysqli $conn,
+        int $deliveryCustomerId,
+        int $consigningClientId,
+        string $customerCode
+    ): void {
+        if ($deliveryCustomerId <= 0 || $consigningClientId <= 0) {
+            return;
+        }
+        if (!$this->columnExists($conn, 'dispatch_waybills', 'delivery_doc_no')) {
+            return;
+        }
+        $cc = $consigningClientId;
+        $dcId = $deliveryCustomerId;
+        $codeTrim = trim($customerCode);
+        $sqlList = "
+            SELECT DISTINCT TRIM(w.delivery_doc_no) AS dno
+            FROM dispatch_waybills w
+            WHERE w.consigning_client_id = ?
+              AND TRIM(COALESCE(w.delivery_doc_no, '')) <> ''
+              AND COALESCE(w.order_status, '') <> '已派送'
+              AND (w.delivery_customer_id = ? OR (w.delivery_customer_id IS NULL AND TRIM(COALESCE(w.delivery_customer_code, '')) = ?))
+        ";
+        $docNos = [];
+        $stList = $conn->prepare($sqlList);
+        if ($stList) {
+            $stList->bind_param('iis', $cc, $dcId, $codeTrim);
+            $stList->execute();
+            $rl = $stList->get_result();
+            while ($rl && ($row = $rl->fetch_assoc())) {
+                $d = trim((string)($row['dno'] ?? ''));
+                if ($d !== '') {
+                    $docNos[$d] = true;
+                }
+            }
+            $stList->close();
+        }
+        foreach (array_keys($docNos) as $_dno) {
+            $dno = trim((string)$_dno);
+            if ($dno === '') {
+                continue;
+            }
+            $this->unbindWaybillsFromDeliveryDoc($conn, $dno, [$deliveryCustomerId]);
+            if ($this->tableExists($conn, 'dispatch_delivery_doc_stops')) {
+                $this->initializeDeliveryDocStops($conn, $dno);
+            }
+        }
+    }
+
+    private function deliveryDocHasDriverRunTokens(mysqli $conn, string $docNo): bool
+    {
+        $d = trim($docNo);
+        if ($d === '' || !$this->tableExists($conn, 'dispatch_driver_run_tokens')) {
+            return false;
+        }
+        $st = $conn->prepare('SELECT 1 FROM dispatch_driver_run_tokens WHERE delivery_doc_no = ? LIMIT 1');
+        if (!$st) {
+            return false;
+        }
+        $st->bind_param('s', $d);
+        $st->execute();
+        $ok = (bool)$st->get_result()->fetch_row();
+        $st->close();
+        return $ok;
+    }
+
+    /**
+     * @return array<string,bool> customer_code => true
+     */
+    private function customerCodesOnDocWithRestrictedBusinessState(mysqli $conn, string $docNo): array
+    {
+        $d = trim($docNo);
+        $out = [];
+        if ($d === '' || !$this->columnExists($conn, 'dispatch_waybills', 'delivery_doc_no')) {
+            return $out;
+        }
+        if (!$this->columnExists($conn, 'dispatch_delivery_customers', 'customer_state')) {
+            return $out;
+        }
+        $sql = "
+            SELECT DISTINCT TRIM(COALESCE(NULLIF(TRIM(dc1.customer_code), ''), NULLIF(TRIM(w.delivery_customer_code), ''))) AS cust_code
+            FROM dispatch_waybills w
+            LEFT JOIN dispatch_delivery_customers dc1 ON dc1.id = w.delivery_customer_id
+            LEFT JOIN dispatch_delivery_customers dc2 ON w.delivery_customer_id IS NULL
+                AND dc2.consigning_client_id = w.consigning_client_id
+                AND TRIM(dc2.customer_code) = TRIM(COALESCE(w.delivery_customer_code, ''))
+            WHERE w.delivery_doc_no COLLATE utf8mb4_unicode_ci = ?
+              AND TRIM(COALESCE(NULLIF(TRIM(dc1.customer_code), ''), NULLIF(TRIM(w.delivery_customer_code), ''), '')) <> ''
+              AND COALESCE(
+                    NULLIF(TRIM(COALESCE(dc1.customer_state, '')), ''),
+                    NULLIF(TRIM(COALESCE(dc2.customer_state, '')), ''),
+                    '正常'
+                ) IN ('异常', '暂停')
+        ";
+        $st = $conn->prepare($sql);
+        if (!$st) {
+            return $out;
+        }
+        $st->bind_param('s', $d);
+        $st->execute();
+        $res = $st->get_result();
+        while ($res && ($row = $res->fetch_assoc())) {
+            $c = trim((string)($row['cust_code'] ?? ''));
+            if ($c !== '') {
+                $out[$c] = true;
+            }
+        }
+        $st->close();
+        return $out;
+    }
+
+    /**
+     * @param list<array<string,mixed>> $segmentCustomers
+     * @return list<array<string,mixed>>
+     */
+    /** 司机分段页：用于判断「同定位」的经纬度精度（约亚米级，避免浮点噪声） */
+    private const DRIVER_SAME_GEO_DECIMALS = 6;
+
+    /**
+     * 从停靠行解析经纬度键；缺坐标或无效时返回 null（不参与同址合并）。
+     */
+    private function driverRunGeoKeyForCustomerRow(array $row): ?string
+    {
+        $lat = $row['latitude'] ?? null;
+        $lng = $row['longitude'] ?? null;
+        if ($lat === null || $lng === null) {
+            return null;
+        }
+        if (is_string($lat)) {
+            $lat = trim($lat);
+        }
+        if (is_string($lng)) {
+            $lng = trim($lng);
+        }
+        if ($lat === '' || $lng === '') {
+            return null;
+        }
+        $la = (float)$lat;
+        $ln = (float)$lng;
+        if (!is_finite($la) || !is_finite($ln)) {
+            return null;
+        }
+        if (abs($la) < 1e-9 && abs($ln) < 1e-9) {
+            return null;
+        }
+        $p = self::DRIVER_SAME_GEO_DECIMALS;
+
+        return (string)round($la, $p) . ',' . (string)round($ln, $p);
+    }
+
+    /**
+     * 不改变「每段 6 人」分块，仅在当前段列表上标注连续同坐标组，并生成跨段同坐标提示文案。
+     *
+     * @param list<array<string,mixed>> $segmentRows
+     * @return array{rows: list<array<string,mixed>>, cross_prev: string, cross_next: string}
+     */
+    private function driverRunEnrichSegmentWithSameGeoHints(array $segmentRows, ?array $prevSegmentLast, ?array $nextSegmentFirst): array
+    {
+        $crossPrev = '';
+        $crossNext = '';
+        $n = count($segmentRows);
+        if ($n === 0) {
+            return ['rows' => $segmentRows, 'cross_prev' => '', 'cross_next' => ''];
+        }
+        $keys = [];
+        foreach ($segmentRows as $i => $r) {
+            $keys[$i] = $this->driverRunGeoKeyForCustomerRow($r);
+        }
+        $i = 0;
+        while ($i < $n) {
+            $k = $keys[$i];
+            if ($k === null) {
+                $i++;
+                continue;
+            }
+            $j = $i;
+            while ($j + 1 < $n && $keys[$j + 1] === $k) {
+                $j++;
+            }
+            $runLen = $j - $i + 1;
+            if ($runLen >= 2) {
+                $hue = abs((int)crc32($k)) % 360;
+                for ($t = 0; $t < $runLen; $t++) {
+                    $idx = $i + $t;
+                    $segmentRows[$idx]['driver_same_geo_run_len'] = $runLen;
+                    $segmentRows[$idx]['driver_same_geo_run_index'] = $t + 1;
+                    $segmentRows[$idx]['driver_same_geo_css_hue'] = $hue;
+                }
+            }
+            $i = $j + 1;
+        }
+        $k0 = $keys[0] ?? null;
+        $pk = $prevSegmentLast !== null ? $this->driverRunGeoKeyForCustomerRow($prevSegmentLast) : null;
+        if ($k0 !== null && $pk !== null && $k0 === $pk) {
+            $c0 = trim((string)($segmentRows[0]['customer_code'] ?? ''));
+            $cp = trim((string)($prevSegmentLast['customer_code'] ?? ''));
+            $crossPrev = 'ลูกค้าคนสุดท้ายของช่วงก่อน (' . ($cp !== '' ? $cp : '—') . ') กับลูกค้าคนแรกของช่วงนี้ (' . ($c0 !== '' ? $c0 : '—') . ') พิกัดเดียวกัน: เป็นจุดส่งเดียวกัน โปรดตรวจสอบให้ครบ อย่าลืมส่ง';
+        }
+        $kLast = $keys[$n - 1] ?? null;
+        $nk = $nextSegmentFirst !== null ? $this->driverRunGeoKeyForCustomerRow($nextSegmentFirst) : null;
+        if ($kLast !== null && $nk !== null && $kLast === $nk) {
+            $cL = trim((string)($segmentRows[$n - 1]['customer_code'] ?? ''));
+            $cn = trim((string)($nextSegmentFirst['customer_code'] ?? ''));
+            $crossNext = 'ลูกค้าคนสุดท้ายของช่วงนี้ (' . ($cL !== '' ? $cL : '—') . ') กับลูกค้าคนแรกของช่วงถัดไป (' . ($cn !== '' ? $cn : '—') . ') พิกัดเดียวกัน: ถุง/รอบถัดไปยังเป็นจุดส่งเดียวกัน โปรดระวัง';
+        }
+
+        return ['rows' => $segmentRows, 'cross_prev' => $crossPrev, 'cross_next' => $crossNext];
+    }
+
+    private function applyPodBlockedFlagsForDriverSegment(mysqli $conn, string $docNo, array $segmentCustomers): array
+    {
+        if ($segmentCustomers === [] || !$this->deliveryDocHasDriverRunTokens($conn, $docNo)) {
+            return $segmentCustomers;
+        }
+        $blocked = $this->customerCodesOnDocWithRestrictedBusinessState($conn, $docNo);
+        if ($blocked === []) {
+            return $segmentCustomers;
+        }
+        foreach ($segmentCustomers as $i => $r) {
+            $c = trim((string)($r['customer_code'] ?? ''));
+            $segmentCustomers[$i]['pod_blocked'] = ($c !== '' && isset($blocked[$c]));
+        }
+        return $segmentCustomers;
+    }
+
+    private function driverRunIsPodUploadBlockedForCustomer(mysqli $conn, string $docNo, string $customerCode): bool
+    {
+        $c = trim($customerCode);
+        if ($c === '' || !$this->deliveryDocHasDriverRunTokens($conn, $docNo)) {
+            return false;
+        }
+        $blocked = $this->customerCodesOnDocWithRestrictedBusinessState($conn, $docNo);
+        return isset($blocked[$c]);
     }
 
     private function buildRoutesCombined(string $rp, string $rs): string
@@ -419,6 +773,42 @@ class DispatchController
         exit;
     }
 
+    /**
+     * 按参数值自动生成 bind_param 类型串并绑定，避免手写类型串与参数数量错位。
+     *
+     * @param list<mixed> $params
+     */
+    private function bindStmtAuto(mysqli_stmt $stmt, array $params): bool
+    {
+        $expected = (int)$stmt->param_count;
+        if ($expected !== count($params)) {
+            return false;
+        }
+        if ($params === []) {
+            return true;
+        }
+        $types = '';
+        foreach ($params as $p) {
+            if (is_int($p)) {
+                $types .= 'i';
+            } elseif (is_float($p)) {
+                $types .= 'd';
+            } else {
+                $types .= 's';
+            }
+        }
+        $args = [$types];
+        foreach ($params as $i => $v) {
+            $args[] = &$params[$i];
+        }
+
+        try {
+            return (bool)call_user_func_array([$stmt, 'bind_param'], $args);
+        } catch (Throwable $e) {
+            return false;
+        }
+    }
+
     /** 将 CSV 表头（中文或旧英文别名）规范为程序内部使用的英文字段名 */
     private function canonicalOrderImportCsvField(string $rawKey): string
     {
@@ -574,6 +964,286 @@ class DispatchController
             '客户需求' => 'customer_requirements',
         ];
         return $aliases[$k] ?? '';
+    }
+
+    /**
+     * @param list<string> $headerRow
+     * @param list<string> $row
+     * @return array<string, string>
+     */
+    private function orderImportBuildRowMap(array $headerRow, array $row): array
+    {
+        $map = [];
+        foreach ($headerRow as $i => $key) {
+            $k = trim((string)$key);
+            if (str_starts_with($k, "\xEF\xBB\xBF")) {
+                $k = trim(substr($k, 3));
+            }
+            if ($k === '') {
+                continue;
+            }
+            $canon = $this->canonicalOrderImportCsvField($k);
+            if ($canon === '') {
+                continue;
+            }
+            $map[$canon] = trim((string)($row[$i] ?? ''));
+        }
+
+        return $map;
+    }
+
+    /**
+     * @param list<string> $headerRow
+     * @param list<string> $row
+     * @return array<string, string>
+     */
+    private function deliveryImportBuildRowMap(array $headerRow, array $row): array
+    {
+        $map = [];
+        foreach ($headerRow as $i => $key) {
+            $k = trim((string)$key);
+            if (str_starts_with($k, "\xEF\xBB\xBF")) {
+                $k = trim(substr($k, 3));
+            }
+            if ($k === '') {
+                continue;
+            }
+            $canon = $this->canonicalDeliveryImportCsvField($k);
+            if ($canon === '') {
+                continue;
+            }
+            $map[$canon] = trim((string)($row[$i] ?? ''));
+        }
+
+        return $map;
+    }
+
+    /** @param list<string>|null $headerRow */
+    private function deliveryImportHeaderHasConsigningColumn(?array $headerRow): bool
+    {
+        if (!is_array($headerRow)) {
+            return false;
+        }
+        foreach ($headerRow as $hKey) {
+            $hk = trim((string)$hKey);
+            if (str_starts_with($hk, "\xEF\xBB\xBF")) {
+                $hk = trim(substr($hk, 3));
+            }
+            if ($this->canonicalDeliveryImportCsvField($hk) === 'consigning_client_code') {
+                return true;
+            }
+        }
+
+        return false;
+    }
+
+    /**
+     * 单行导入：由表头与单元格生成 map 后执行校验与 upsert（与 CSV 行逻辑一致）。
+     *
+     * @param list<string> $headerRow
+     * @param list<string> $row
+     */
+    private function deliveryImportExecuteMapRow(
+        mysqli $conn,
+        array $headerRow,
+        array $row,
+        int $lineNo,
+        bool $deliveryCsvHasConsigningColumn,
+        int $ccCsv,
+        bool $hideConsigningSelectors,
+        int $boundCcId,
+        int &$ok,
+        int &$upd,
+        int &$fail,
+        array &$failureLog,
+        int $failureLogMax
+    ): void {
+        $map = $this->deliveryImportBuildRowMap($headerRow, $row);
+        $rowTargetCcId = 0;
+        if ($deliveryCsvHasConsigningColumn) {
+            $rowCcCode = trim((string)($map['consigning_client_code'] ?? ''));
+            if ($rowCcCode === '') {
+                $fail++;
+                if (count($failureLog) < $failureLogMax) {
+                    $failureLog[] = [
+                        'line' => $lineNo,
+                        'reason' => '缺少委托客户编码（表头含该列时，每行均须填写）',
+                    ];
+                }
+
+                return;
+            }
+            $rowTargetCcId = $this->consigningClientIdByCode($conn, $rowCcCode);
+            if ($rowTargetCcId <= 0) {
+                $fail++;
+                if (count($failureLog) < $failureLogMax) {
+                    $failureLog[] = [
+                        'line' => $lineNo,
+                        'reason' => '委托客户编码「' . $rowCcCode . '」不存在或未启用',
+                    ];
+                }
+
+                return;
+            }
+            if ($hideConsigningSelectors && $rowTargetCcId !== $boundCcId) {
+                $boundCode = '';
+                $br = $this->consigningClientRowById($conn, $boundCcId);
+                if (is_array($br)) {
+                    $boundCode = trim((string)($br['client_code'] ?? ''));
+                }
+                $fail++;
+                if (count($failureLog) < $failureLogMax) {
+                    $failureLog[] = [
+                        'line' => $lineNo,
+                        'reason' => $boundCode !== ''
+                            ? ('当前为委托客户绑定账号，仅可导入「' . $boundCode . '」，与行内「' . $rowCcCode . '」不符')
+                            : '当前为委托客户绑定账号，仅可导入已绑定的委托客户',
+                    ];
+                }
+
+                return;
+            }
+        } else {
+            $rowTargetCcId = $ccCsv;
+        }
+        $customerCode = (string)($map['customer_code'] ?? '');
+        if ($customerCode === '' || mb_strlen($customerCode) > 60) {
+            $fail++;
+            if (count($failureLog) < $failureLogMax) {
+                $failureLog[] = [
+                    'line' => $lineNo,
+                    'reason' => $customerCode === ''
+                        ? '缺少派送客户编号（表头须能识别为「派送客户编号」或与模板一致的别名）'
+                        : '派送客户编号超过 60 字',
+                ];
+            }
+
+            return;
+        }
+        $wechat = (string)($map['wechat_id'] ?? '');
+        $line = (string)($map['line_id'] ?? '');
+        $recipientName = (string)($map['recipient_name'] ?? '');
+        $phone = (string)($map['phone'] ?? '');
+        $addrHouseNo = (string)($map['addr_house_no'] ?? '');
+        $addrRoadSoi = (string)($map['addr_road_soi'] ?? '');
+        $addrMooVillage = (string)($map['addr_moo_village'] ?? '');
+        $addrTambon = (string)($map['addr_tambon'] ?? '');
+        $addrAmphoe = (string)($map['addr_amphoe'] ?? '');
+        $addrProvince = (string)($map['addr_province'] ?? '');
+        $addrZipcode = (string)($map['addr_zipcode'] ?? '');
+        $geoStatusRaw = (string)($map['geo_status'] ?? '');
+        $geoRaw = (string)($map['geo_position'] ?? '');
+        $rp = (string)($map['route_primary'] ?? '');
+        $rs = (string)($map['route_secondary'] ?? '');
+        $en = (string)($map['community_name_en'] ?? '');
+        $th = (string)($map['community_name_th'] ?? '');
+        $customerRequirement = (string)($map['customer_requirements'] ?? '');
+        if (mb_strlen($wechat) > 120 || mb_strlen($line) > 120 || mb_strlen($recipientName) > 120 || mb_strlen($phone) > 40) {
+            $fail++;
+            if (count($failureLog) < $failureLogMax) {
+                $failureLog[] = ['line' => $lineNo, 'reason' => '微信号/Line/收件人/电话字段长度超限（微信/Line/收件人≤120，电话≤40）'];
+            }
+
+            return;
+        }
+        if (
+            mb_strlen($addrHouseNo) > 120 || mb_strlen($addrRoadSoi) > 160 || mb_strlen($addrMooVillage) > 160
+            || mb_strlen($addrTambon) > 160 || mb_strlen($addrAmphoe) > 160 || mb_strlen($addrProvince) > 160
+            || mb_strlen($addrZipcode) > 20
+        ) {
+            $fail++;
+            if (count($failureLog) < $failureLogMax) {
+                $failureLog[] = ['line' => $lineNo, 'reason' => '泰国地址结构字段长度超限（门牌≤120，其余地址段≤160，Zipcode≤20）'];
+            }
+
+            return;
+        }
+        if (mb_strlen($geoRaw) > 48) {
+            $fail++;
+            if (count($failureLog) < $failureLogMax) {
+                $failureLog[] = ['line' => $lineNo, 'reason' => '定位字段超过 48 字'];
+            }
+
+            return;
+        }
+        if (mb_strlen($rp) > 120 || mb_strlen($rs) > 120) {
+            $fail++;
+            if (count($failureLog) < $failureLogMax) {
+                $failureLog[] = ['line' => $lineNo, 'reason' => '主路线或副路线超过 120 字'];
+            }
+
+            return;
+        }
+        if (mb_strlen($en) > 160 || mb_strlen($th) > 160) {
+            $fail++;
+            if (count($failureLog) < $failureLogMax) {
+                $failureLog[] = ['line' => $lineNo, 'reason' => '小区英文名或泰文名超过 160 字'];
+            }
+
+            return;
+        }
+        if (mb_strlen($customerRequirement) > 5000) {
+            $fail++;
+            if (count($failureLog) < $failureLogMax) {
+                $failureLog[] = ['line' => $lineNo, 'reason' => '客户要求超过 5000 字'];
+            }
+
+            return;
+        }
+        $geoParsed = $this->parseDeliveryGeoPosition($geoRaw);
+        if (!$geoParsed['ok']) {
+            $fail++;
+            if (count($failureLog) < $failureLogMax) {
+                $failureLog[] = [
+                    'line' => $lineNo,
+                    'reason' => $geoParsed['error'] !== '' ? $geoParsed['error'] : '定位格式无效',
+                ];
+            }
+
+            return;
+        }
+        $custStateRaw = (string)($map['customer_state'] ?? '');
+        $res = $this->upsertDeliveryCustomerFromImport(
+            $conn,
+            $rowTargetCcId,
+            $customerCode,
+            $wechat,
+            $line,
+            $recipientName,
+            $phone,
+            $addrHouseNo,
+            $addrRoadSoi,
+            $addrMooVillage,
+            $addrTambon,
+            $addrAmphoe,
+            $addrProvince,
+            $addrZipcode,
+            $geoStatusRaw,
+            $geoParsed['lat'],
+            $geoParsed['lng'],
+            $rp,
+            $rs,
+            $en,
+            $th,
+            $custStateRaw,
+            $customerRequirement
+        );
+        if ($res['ok']) {
+            if (($res['action'] ?? '') === 'update') {
+                $upd++;
+            } else {
+                $ok++;
+            }
+        } else {
+            $fail++;
+            if (count($failureLog) < $failureLogMax) {
+                $err = trim((string)($res['error'] ?? ''));
+                $failureLog[] = [
+                    'line' => $lineNo,
+                    'reason' => $err !== '' ? ('保存失败：' . $err) : '保存失败（未知原因）',
+                ];
+            }
+        }
     }
 
     /**
@@ -736,135 +1406,56 @@ class DispatchController
             $orderStatus = '待入库';
         }
         [$dcId, $matchStatus, $storedCode] = $this->resolveDeliveryMatch($conn, $ccId, $dcode);
-        $stmt = null;
         $withActor = $actorId > 0;
-        if ($dcId === null) {
-            if ($withActor) {
-                $stmt = $conn->prepare('
-                    INSERT INTO dispatch_waybills (
-                        consigning_client_id, original_tracking_no, delivery_customer_code,
-                        delivery_customer_id, weight_kg, length_cm, width_cm, height_cm, volume_m3, quantity, inbound_batch,
-                        source, match_status, order_status, import_date, scanned_at, delivered_at, created_by
-                    ) VALUES (?, ?, ?, NULL, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, NULL, NOW(), ?)
-                ');
-                if ($stmt) {
-                    $bt0 = 'iss' . 'dddd' . 'd' . str_repeat('s', 5) . 'i';
-                    $stmt->bind_param(
-                        $bt0,
-                        $ccId,
-                        $track,
-                        $storedCode,
-                        $weightF,
-                        $lengthF,
-                        $widthF,
-                        $heightF,
-                        $volumeF,
-                        $qtyF,
-                        $batch,
-                        $source,
-                        $matchStatus,
-                        $orderStatus,
-                        $importDate,
-                        $actorId
-                    );
-                }
-            } else {
-                $stmt = $conn->prepare('
-                    INSERT INTO dispatch_waybills (
-                        consigning_client_id, original_tracking_no, delivery_customer_code,
-                        delivery_customer_id, weight_kg, length_cm, width_cm, height_cm, volume_m3, quantity, inbound_batch,
-                        source, match_status, order_status, import_date, scanned_at, delivered_at
-                    ) VALUES (?, ?, ?, NULL, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, NULL, NOW())
-                ');
-                if ($stmt) {
-                    $stmt->bind_param(
-                        'iss' . 'dddd' . 'd' . str_repeat('s', 5),
-                        $ccId,
-                        $track,
-                        $storedCode,
-                        $weightF,
-                        $lengthF,
-                        $widthF,
-                        $heightF,
-                        $volumeF,
-                        $qtyF,
-                        $batch,
-                        $source,
-                        $matchStatus,
-                        $orderStatus,
-                        $importDate
-                    );
-                }
-            }
-        } elseif ($withActor) {
-            $stmt = $conn->prepare('
-                INSERT INTO dispatch_waybills (
-                    consigning_client_id, original_tracking_no, delivery_customer_code,
-                    delivery_customer_id, weight_kg, length_cm, width_cm, height_cm, volume_m3, quantity, inbound_batch,
-                    source, match_status, order_status, import_date, scanned_at, delivered_at, created_by
-                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, NULL, NOW(), ?)
-            ');
-            if ($stmt) {
-                $bt = 'iss' . 'i' . 'dddd' . 'd' . str_repeat('s', 5) . 'i';
-                $stmt->bind_param(
-                    $bt,
-                    $ccId,
-                    $track,
-                    $storedCode,
-                    $dcId,
-                    $weightF,
-                    $lengthF,
-                    $widthF,
-                    $heightF,
-                    $volumeF,
-                    $qtyF,
-                    $batch,
-                    $source,
-                    $matchStatus,
-                    $orderStatus,
-                    $importDate,
-                    $actorId
-                );
-            }
-        } else {
-            $stmt = $conn->prepare('
-                INSERT INTO dispatch_waybills (
-                    consigning_client_id, original_tracking_no, delivery_customer_code,
-                    delivery_customer_id, weight_kg, length_cm, width_cm, height_cm, volume_m3, quantity, inbound_batch,
-                    source, match_status, order_status, import_date, scanned_at, delivered_at
-                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, NULL, NOW())
-            ');
-            if ($stmt) {
-                $stmt->bind_param(
-                    'iss' . 'i' . 'dddd' . 'd' . str_repeat('s', 5),
-                    $ccId,
-                    $track,
-                    $storedCode,
-                    $dcId,
-                    $weightF,
-                    $lengthF,
-                    $widthF,
-                    $heightF,
-                    $volumeF,
-                    $qtyF,
-                    $batch,
-                    $source,
-                    $matchStatus,
-                    $orderStatus,
-                    $importDate
-                );
-            }
-        }
-        if (!$stmt) {
-            return ['ok' => false, 'error' => '保存失败'];
-        }
+        $esc = static fn (string $v): string => "'" . $conn->real_escape_string($v) . "'";
+        $dcSql = $dcId === null ? 'NULL' : (string)(int)$dcId;
+        $createdByCol = $withActor ? ', created_by' : '';
+        $createdByVal = $withActor ? (', ' . (string)(int)$actorId) : '';
+        $sql = sprintf(
+            'INSERT INTO dispatch_waybills (
+                consigning_client_id, original_tracking_no, delivery_customer_code,
+                delivery_customer_id, weight_kg, length_cm, width_cm, height_cm, volume_m3, quantity, inbound_batch,
+                source, match_status, order_status, import_date, scanned_at, delivered_at%s
+            ) VALUES (
+                %d, %s, %s,
+                %s, %s, %s, %s, %s, %s, %s, %s,
+                %s, %s, %s, %s, NULL, NOW()%s
+            )',
+            $createdByCol,
+            (int)$ccId,
+            $esc($track),
+            $esc($storedCode),
+            $dcSql,
+            (string)(float)$weightF,
+            (string)(float)$lengthF,
+            (string)(float)$widthF,
+            (string)(float)$heightF,
+            (string)(float)$volumeF,
+            (string)(float)$qtyF,
+            $esc($batch),
+            $esc($source),
+            $esc($matchStatus),
+            $esc($orderStatus),
+            $esc($importDate),
+            $createdByVal
+        );
         try {
-            $stmt->execute();
-            $stmt->close();
+            $okExec = $conn->query($sql);
+            if (!$okExec) {
+                return ['ok' => false, 'error' => '保存失败'];
+            }
+            $newId = (int)$conn->insert_id;
+            if (
+                $newId > 0
+                && in_array($orderStatus, ['已入库', '待转发', '待自取'], true)
+                && $dcId !== null
+                && (int)$dcId > 0
+            ) {
+                $this->reopenBindingListWaybillsForDeliveryCustomer($conn, $ccId, (int)$dcId, trim($storedCode), $newId);
+            }
             return ['ok' => true, 'error' => ''];
         } catch (mysqli_sql_exception $e) {
             $errno = (int)$e->getCode();
-            $stmt->close();
             if ($errno === 1062) {
                 return ['ok' => false, 'error' => 'duplicate'];
             }
@@ -988,36 +1579,65 @@ class DispatchController
         return str_replace(["\r", "\n"], ' ', $text);
     }
 
+    /** 到件标签第 4 行：门牌与路（巷）之间加半角逗号并在其后跟一个空格；仅有一段时原样输出。 */
+    private function arrivalLabelHouseRoadLine(string $house, string $road): string
+    {
+        $house = trim($house);
+        $road = trim($road);
+        if ($house !== '' && $road !== '') {
+            return $house . ', ' . $road;
+        }
+
+        return $house !== '' ? $house : $road;
+    }
+
     private function renderArrivalLabelHtml(array $label): string
     {
         $rp = trim((string)($label['route_primary'] ?? ''));
         $rs = trim((string)($label['route_secondary'] ?? ''));
-        $routes = ($rp !== '' && $rs !== '') ? ($rp . ' / ' . $rs) : ($rp !== '' ? $rp : ($rs !== '' ? $rs : '-'));
+        $routes = ($rp !== '' && $rs !== '') ? ($rp . ' / ' . $rs) : ($rp !== '' ? $rp : ($rs !== '' ? $rs : ''));
+        $houseRoad = $this->arrivalLabelHouseRoadLine((string)($label['addr_house_no'] ?? ''), (string)($label['addr_road_soi'] ?? ''));
         $esc = static function ($v): string {
             return htmlspecialchars((string)$v, ENT_QUOTES, 'UTF-8');
         };
+        $code = trim((string)($label['customer_code'] ?? ''));
+        $wx = trim((string)($label['wechat_id'] ?? ''));
+        $pending = (string)($label['pending_count'] ?? '0');
+        $community = trim((string)($label['community_name_th'] ?? ''));
+        // 物理热敏（按你当前试向）：宽 75mm × 长 100mm；@page 为 CSS「宽 高」，勿用 transform。
         $html = '<!doctype html><html><head><meta charset="utf-8">';
         $html .= '<style>';
         $html .= '@page{size:75mm 100mm;margin:0;}';
-        $html .= 'html,body{margin:0;padding:0;width:75mm;height:100mm;font-family:Tahoma,"Noto Sans Thai","Segoe UI",Arial,sans-serif;color:#111;overflow:hidden;}';
-        $html .= '.wrap{width:75mm;height:100mm;box-sizing:border-box;padding:4mm;}';
-        $html .= '.line{margin-bottom:2.4mm;font-size:10.5pt;line-height:1.2;}';
-        $html .= '.line:last-child{margin-bottom:0;}';
-        $html .= '.k{display:inline-block;min-width:24mm;font-weight:700;}';
-        $html .= '.v{font-weight:600;}';
+        $html .= 'html,body{margin:0;padding:0;width:75mm;height:100mm;font-family:"Microsoft YaHei UI","Microsoft YaHei","PingFang SC","Hiragino Sans GB","Noto Sans SC",SimHei,Tahoma,"Noto Sans Thai","Segoe UI",Arial,sans-serif;color:#111;overflow:hidden;box-sizing:border-box;}';
+        $html .= 'body{display:flex;flex-direction:column;box-sizing:border-box;}';
+        $html .= '.wrap{flex:1 1 auto;min-height:0;width:100%;box-sizing:border-box;padding:1.65mm 2.85mm 1.65mm 2.85mm;display:flex;flex-direction:column;justify-content:flex-start;gap:4.12mm;}';
+        $html .= '.row{display:flex;flex-direction:row;justify-content:space-between;align-items:flex-start;gap:2mm;width:100%;line-height:1.52;box-sizing:border-box;flex-shrink:0;}';
+        $html .= '.row1{font-size:18.5pt;}';
+        $html .= '.row2{font-size:15pt;line-height:1.58;}';
+        $html .= '.row2 .cell,.row2 .cell-r{font-weight:400;}';
+        $html .= '.cell{min-width:0;word-wrap:break-word;overflow-wrap:anywhere;font-weight:700;}';
+        $html .= '.cell-r{text-align:right;font-weight:600;min-width:0;word-wrap:break-word;overflow-wrap:anywhere;}';
+        $html .= '.line3{width:100%;font-size:12pt;line-height:1.58;font-weight:400;word-wrap:break-word;overflow-wrap:anywhere;flex-shrink:0;max-height:3.15em;overflow:hidden;}';
+        $html .= '.line4{white-space:nowrap;word-wrap:normal;overflow-wrap:normal;font-size:15pt;font-weight:700;line-height:1.5;flex-shrink:0;margin-top:1.32mm;}';
         $html .= '</style></head><body><div class="wrap">';
-        $html .= '<div class="line"><span class="k">客户编码</span><span class="v">' . $esc($label['customer_code'] ?? '-') . '</span></div>';
-        $html .= '<div class="line"><span class="k">微信号</span><span class="v">' . $esc($label['wechat_id'] ?? '-') . '</span></div>';
-        $html .= '<div class="line"><span class="k">主/副路线</span><span class="v">' . $esc($routes) . '</span></div>';
-        $html .= '<div class="line"><span class="k">泰文小区</span><span class="v">' . $esc($label['community_name_th'] ?? '-') . '</span></div>';
-        $addrLine = trim((string)($label['addr_th_full'] ?? ''));
-        if ($addrLine === '') {
-            $addrLine = trim((string)($label['lane_or_house_no'] ?? ''));
-        }
-        $html .= '<div class="line"><span class="k">完整地址</span><span class="v">' . $esc($addrLine !== '' ? $addrLine : '-') . '</span></div>';
-        $html .= '<div class="line"><span class="k">未派送总件数</span><span class="v">' . $esc($label['pending_count'] ?? 0) . '</span></div>';
-        $html .= '<div class="line"><span class="k">原始单号</span><span class="v">' . $esc($label['tracking_no'] ?? '-') . '</span></div>';
-        $html .= '</div></body></html>';
+        $html .= '<div class="row row1"><div class="cell">' . $esc($code !== '' ? $code : '—') . '</div><div class="cell cell-r">' . $esc($routes !== '' ? $routes : '—') . '</div></div>';
+        $html .= '<div class="row row2"><div class="cell">' . $esc($wx !== '' ? $wx : '—') . '</div><div class="cell cell-r">' . $esc($pending) . '</div></div>';
+        $html .= '<div class="line3">' . $esc($community !== '' ? $community : '—') . '</div>';
+        $html .= '<div class="line4" id="arrivalLine4">' . $esc($houseRoad) . '</div>';
+        $html .= '</div>';
+        $html .= '<script>'
+            . 'window.addEventListener("load",function(){'
+            . 'var el=document.getElementById("arrivalLine4");if(!el)return;'
+            . 'el.style.whiteSpace="nowrap";'
+            . 'var c=el.parentElement;if(!c)return;'
+            . 'var minPt=9,maxPt=15;'
+            . 'function avail(){return Math.max(1,c.clientWidth-4);}'
+            . 'for(var s=maxPt;s>=minPt;s-=0.25){'
+            . 'el.style.fontSize=s+"pt";el.style.fontWeight="700";'
+            . 'if(el.scrollWidth<=avail())break;'
+            . '}'
+            . '});'
+            . '</script></body></html>';
         return $html;
     }
 
@@ -1053,21 +1673,75 @@ class DispatchController
         return 'file:///' . $drive . '/' . implode('/', $encParts);
     }
 
+    /**
+     * Chrome 拉 arrival-label-html 的地址。
+     * 默认用 file://，避免 PHP 内置服务器单线程时「本机 HTTP 再进 PHP」死锁、菜鸟下载 PDF 超时。
+     * 生产环境（php-fpm 等多 worker）若需 HTTP 才正确识别 @page，可设 DISPATCH_LABEL_CHROME_USE_HTTP=1，
+     * 或设 DISPATCH_LABEL_CHROME_HTML_BASE 指向 Chrome 能访问的站点基址（含协议与端口）。
+     */
+    private function arrivalLabelChromePrintUrl(string $token, string $fallbackFilePath): string
+    {
+        $base = trim((string)(getenv('DISPATCH_LABEL_CHROME_HTML_BASE') ?: ''));
+        if ($base !== '') {
+            return rtrim($base, '/') . '/dispatch/arrival-label-html?t=' . rawurlencode($token);
+        }
+        if (trim((string)(getenv('DISPATCH_LABEL_CHROME_USE_HTTP') ?: '')) === '1') {
+            $host = trim((string)($_SERVER['HTTP_HOST'] ?? ''));
+            if ($host !== '') {
+                return $this->buildAbsoluteUrl('/dispatch/arrival-label-html?t=' . rawurlencode($token));
+            }
+        }
+
+        return $this->localFileUri($fallbackFilePath);
+    }
+
+    /** Chrome file:// 常得到 Letter/A4；合法标签约 212×283pt（宽75×长100mm）或互换，勿误判。 */
+    private function arrivalLabelChromePdfPageTooLarge(string $pdfPath): bool
+    {
+        $snip = (string)@file_get_contents($pdfPath, false, null, 0, 65536);
+        if ($snip === '') {
+            return false;
+        }
+        if (!preg_match_all('/\/MediaBox\s*\[\s*[\d.]+\s+[\d.]+\s+([\d.]+)\s+([\d.]+)\s*\]/', $snip, $m, PREG_SET_ORDER)) {
+            return false;
+        }
+        foreach ($m as $row) {
+            $w = (float)$row[1];
+            $h = (float)$row[2];
+            $a = min($w, $h);
+            $b = max($w, $h);
+            if ($a > 320.0 || $b > 360.0) {
+                return true;
+            }
+        }
+
+        return false;
+    }
+
+    private function arrivalLabelWritePhpBinaryPdf(string $pdfPath, array $label): bool
+    {
+        $bin = $this->renderArrivalLabelPdfBinary($label);
+        if ($bin === '') {
+            return false;
+        }
+
+        return @file_put_contents($pdfPath, $bin) !== false && is_file($pdfPath) && (int)@filesize($pdfPath) > 0;
+    }
+
     private function generateArrivalLabelPdfFile(string $token, ?string &$reason = null): ?string
     {
         $reason = '';
-        $dir = rtrim((string)sys_get_temp_dir(), '\\/') . DIRECTORY_SEPARATOR . 'uda-arrival-label-pdf';
-        if (!is_dir($dir)) {
-            @mkdir($dir, 0777, true);
-        }
-        $pdfPath = $dir . DIRECTORY_SEPARATOR . $token . '.pdf';
-        $htmlPath = $dir . DIRECTORY_SEPARATOR . $token . '.html';
-        $browsers = $this->browserExecutablePaths();
-        if (!$browsers) {
-            $reason = 'browser_not_found';
-            return null;
+        $tmpDir = rtrim((string)sys_get_temp_dir(), '\\/') . DIRECTORY_SEPARATOR . 'uda-arrival-label-pdf';
+        if (!is_dir($tmpDir)) {
+            @mkdir($tmpDir, 0777, true);
         }
         $storeDir = __DIR__ . '/../../storage/arrival-label-pdf';
+        if (!is_dir($storeDir)) {
+            @mkdir($storeDir, 0777, true);
+        }
+        // PDF 必须落在 storage，与 arrivalLabelPdf() 读取路径一致（此前写在 temp 会导致反复生成、超时）
+        $pdfPath = $storeDir . '/' . $token . '.pdf';
+        $htmlPath = $tmpDir . DIRECTORY_SEPARATOR . $token . '.html';
         $jsonPath = $storeDir . '/' . $token . '.json';
         if (!is_file($jsonPath)) {
             $reason = 'token_not_found';
@@ -1085,16 +1759,25 @@ class DispatchController
             return null;
         }
         $label = is_array($item['label'] ?? null) ? $item['label'] : [];
+        $browsers = $this->browserExecutablePaths();
+        if (!$browsers) {
+            if ($this->arrivalLabelWritePhpBinaryPdf($pdfPath, $label)) {
+                $reason = 'ok_php_binary_no_browser';
+                return $pdfPath;
+            }
+            $reason = 'browser_not_found';
+            return null;
+        }
         $html = $this->renderArrivalLabelHtml($label);
         if ($html === '' || @file_put_contents($htmlPath, $html) === false) {
             $reason = 'html_write_failed';
             return null;
         }
-        $htmlUrl = $this->localFileUri($htmlPath);
+        $htmlUrl = $this->arrivalLabelChromePrintUrl($token, $htmlPath);
         if (is_file($pdfPath)) {
             @unlink($pdfPath);
         }
-        $profileDir = $dir . DIRECTORY_SEPARATOR . 'profile';
+        $profileDir = $tmpDir . DIRECTORY_SEPARATOR . 'profile';
         if (!is_dir($profileDir)) {
             @mkdir($profileDir, 0777, true);
         }
@@ -1104,11 +1787,14 @@ class DispatchController
             }
             $cmd = [
                 $browserPath,
-                '--headless',
+                '--headless=new',
                 '--disable-gpu',
                 '--disable-software-rasterizer',
                 '--no-first-run',
                 '--no-default-browser-check',
+                '--ignore-certificate-errors',
+                '--allow-insecure-localhost',
+                '--no-pdf-header-footer',
                 '--user-data-dir=' . $profileDir,
                 '--print-to-pdf=' . $pdfPath,
                 $htmlUrl,
@@ -1130,7 +1816,7 @@ class DispatchController
                 if (!is_array($status) || empty($status['running'])) {
                     break;
                 }
-                if ((microtime(true) - $startAt) >= 4.5) {
+                if ((microtime(true) - $startAt) >= 12.0) {
                     $timedOut = true;
                     @proc_terminate($proc, 9);
                     break;
@@ -1155,7 +1841,80 @@ class DispatchController
                 $reason = 'pdf_not_generated_' . basename($browserPath);
                 continue;
             }
-            $reason = 'ok_' . basename($browserPath);
+            if ($this->arrivalLabelChromePdfPageTooLarge($pdfPath)) {
+                if ($this->arrivalLabelWritePhpBinaryPdf($pdfPath, $label)) {
+                    $reason = 'ok_chrome_replaced_pagesize_' . basename($browserPath);
+                } else {
+                    $reason = 'chrome_letter_php_replace_failed_' . basename($browserPath);
+                }
+            } else {
+                $reason = 'ok_' . basename($browserPath);
+            }
+            return $pdfPath;
+        }
+        // 若 HTTP 拉取失败（如内网 Chrome 无法访问自身），再试一次纯 file://（部分环境仍可用）
+        if (strpos($htmlUrl, 'http://') === 0 || strpos($htmlUrl, 'https://') === 0) {
+            $htmlUrlFile = $this->localFileUri($htmlPath);
+            foreach ($browsers as $browserPath) {
+                if (is_file($pdfPath)) {
+                    @unlink($pdfPath);
+                }
+                $cmd = [
+                    $browserPath,
+                    '--headless=new',
+                    '--disable-gpu',
+                    '--disable-software-rasterizer',
+                    '--no-first-run',
+                    '--no-default-browser-check',
+                    '--user-data-dir=' . $profileDir,
+                    '--print-to-pdf=' . $pdfPath,
+                    $htmlUrlFile,
+                ];
+                $desc = [
+                    0 => ['pipe', 'r'],
+                    1 => ['pipe', 'w'],
+                    2 => ['pipe', 'w'],
+                ];
+                $proc = @proc_open($cmd, $desc, $pipes, null, null, ['bypass_shell' => true]);
+                if (!is_resource($proc)) {
+                    continue;
+                }
+                $startAt = microtime(true);
+                $timedOut = false;
+                while (true) {
+                    $status = proc_get_status($proc);
+                    if (!is_array($status) || empty($status['running'])) {
+                        break;
+                    }
+                    if ((microtime(true) - $startAt) >= 12.0) {
+                        $timedOut = true;
+                        @proc_terminate($proc, 9);
+                        break;
+                    }
+                    usleep(100000);
+                }
+                foreach ($pipes as $pipe) {
+                    if (is_resource($pipe)) {
+                        @fclose($pipe);
+                    }
+                }
+                $code = @proc_close($proc);
+                if (!$timedOut && $code === 0 && is_file($pdfPath) && (int)@filesize($pdfPath) > 0) {
+                    if ($this->arrivalLabelChromePdfPageTooLarge($pdfPath)) {
+                        if ($this->arrivalLabelWritePhpBinaryPdf($pdfPath, $label)) {
+                            $reason = 'ok_file_fallback_replaced_pagesize_' . basename($browserPath);
+                        } else {
+                            $reason = 'file_fallback_letter_php_replace_failed_' . basename($browserPath);
+                        }
+                    } else {
+                        $reason = 'ok_file_fallback_' . basename($browserPath);
+                    }
+                    return $pdfPath;
+                }
+            }
+        }
+        if ($this->arrivalLabelWritePhpBinaryPdf($pdfPath, $label)) {
+            $reason = 'ok_php_binary_fallback';
             return $pdfPath;
         }
         return null;
@@ -1163,29 +1922,168 @@ class DispatchController
 
     private function renderArrivalLabelPdfBinary(array $label): string
     {
-        $wPt = 100.0 / 25.4 * 72.0;
-        $hPt = 75.0 / 25.4 * 72.0;
+        if (class_exists(\TCPDF::class)) {
+            return $this->renderArrivalLabelPdfViaTcpdf($label);
+        }
+
+        return $this->renderArrivalLabelPdfBinaryLegacy($label);
+    }
+
+    /** dejavusans 不含 CJK；含汉字时用 TCPDF 内置 cid0cs（简体中文 UTF-8）。 */
+    private function arrivalLabelTcpdfTextHasCjk(string $text): bool
+    {
+        return (bool) preg_match('/\p{Han}/u', $text);
+    }
+
+    private function arrivalLabelTcpdfSetGlyphFont(\TCPDF $pdf, string $text, float $sizePt, bool $bold): void
+    {
+        if ($this->arrivalLabelTcpdfTextHasCjk($text)) {
+            $pdf->SetFont('cid0cs', $bold ? 'B' : '', $sizePt);
+
+            return;
+        }
+        $pdf->SetFont('dejavusans', $bold ? 'B' : '', $sizePt);
+    }
+
+    /**
+     * UTF-8 标签：泰文等用 DejaVu；中文用 cid0cs（按格 SetFont，勿全程 dejavu 否则中文乱码/缺字）。
+     * 物理（当前试向）：宽 75mm × 长 100mm；TCPDF 格式 [75,100] + 纵向 P。PDF /Rotate 默认不写入；仅驱动需要时再设 DISPATCH_ARRIVAL_LABEL_TCPDF_ROTATE=90/180/270。
+     */
+    private function renderArrivalLabelPdfViaTcpdf(array $label): string
+    {
+        $rp = trim((string)($label['route_primary'] ?? ''));
+        $rs = trim((string)($label['route_secondary'] ?? ''));
+        $routes = ($rp !== '' && $rs !== '') ? ($rp . ' / ' . $rs) : ($rp !== '' ? $rp : ($rs !== '' ? $rs : '—'));
+        $houseRoad = $this->arrivalLabelHouseRoadLine((string)($label['addr_house_no'] ?? ''), (string)($label['addr_road_soi'] ?? ''));
+        if ($houseRoad === '') {
+            $houseRoad = '—';
+        }
+        $code = trim((string)($label['customer_code'] ?? '')) !== '' ? trim((string)$label['customer_code']) : '—';
+        $wx = trim((string)($label['wechat_id'] ?? '')) !== '' ? trim((string)$label['wechat_id']) : '—';
+        $pending = (string)($label['pending_count'] ?? '0');
+        $community = trim((string)($label['community_name_th'] ?? '')) !== '' ? trim((string)$label['community_name_th']) : '—';
+
+        $rotRaw = trim((string)(getenv('DISPATCH_ARRIVAL_LABEL_TCPDF_ROTATE') ?: ''));
+        $rotate = $rotRaw === '' ? 0 : (int) $rotRaw;
+        if ($rotate % 90 !== 0) {
+            $rotate = 0;
+        }
+
+        $pageFmt = [75.0, 100.0];
+        if ($rotate !== 0) {
+            $pageFmt['Rotate'] = $rotate;
+        }
+
+        // [75,100] 宽<高 → TCPDF 默认纵向 P；与 HTML 宽 75×长 100 一致，勿用 L+[100,75] 以免与实物轴向搞反。
+        $pdf = new \TCPDF('P', 'mm', $pageFmt, true, 'UTF-8', false, false);
+        $pdf->setPrintHeader(false);
+        $pdf->setPrintFooter(false);
+        $pdf->SetMargins(3.2, 0.45, 3.2, true);
+        $pdf->SetAutoPageBreak(false, 0);
+        $pdf->SetCompression(true);
+        $pdf->AddPage();
+        $pdf->setCellPaddings(0.28, 0.68, 0.28, 0.68);
+        $pdf->setCellMargins(0, 0, 0, 0);
+
+        $mL = 3.2;
+        $mT = 0.45;
+        $margins = $pdf->getMargins();
+        $contentW = $pdf->getPageWidth() - $margins['left'] - $margins['right'];
+
+        // 顺序排版（GetY+Ln），避免固定 Y 与 MultiCell 的 maxh/垂直居中一起改 y 导致前两行被裁到页外；行高须大于字号避免 TCPDF 整行裁掉
+        $pdf->SetXY($mL, $mT);
+
+        $h1 = 13.02;
+        $this->arrivalLabelTcpdfSetGlyphFont($pdf, $code, 18.5, true);
+        $pdf->Cell($contentW * 0.48, $h1, $code, 0, 0, 'L', false, '', 0, false, 'T', 'M');
+        $this->arrivalLabelTcpdfSetGlyphFont($pdf, $routes, 18.5, true);
+        $pdf->Cell($contentW * 0.52, $h1, $routes, 0, 1, 'R', false, '', 0, false, 'T', 'M');
+
+        $pdf->SetX($mL);
+        $h2 = 11.38;
+        $this->arrivalLabelTcpdfSetGlyphFont($pdf, $wx, 15.0, false);
+        $pdf->Cell($contentW * 0.48, $h2, $wx, 0, 0, 'L', false, '', 0, false, 'T', 'M');
+        $this->arrivalLabelTcpdfSetGlyphFont($pdf, $pending, 15.0, false);
+        $pdf->Cell($contentW * 0.52, $h2, $pending, 0, 1, 'R', false, '', 0, false, 'T', 'M');
+
+        $pdf->SetX($mL);
+        $this->arrivalLabelTcpdfSetGlyphFont($pdf, $community, 12.0, false);
+        // maxh=0：不用「在 maxh 内垂直居中」逻辑，避免 y 被挪到与后续 SetXY 打架
+        $pdf->MultiCell($contentW, 6.15, $community, 0, 'L', false, 1, null, null, true, 0, false, true, 0, 'T', false);
+        $pdf->Ln(1.48);
+
+        $f4 = 15.0;
+        while ($f4 >= 9.0) {
+            $this->arrivalLabelTcpdfSetGlyphFont($pdf, $houseRoad, $f4, true);
+            if ($pdf->GetStringWidth($houseRoad) <= $contentW - 1.2) {
+                break;
+            }
+            $f4 -= 0.5;
+        }
+        $pdf->SetX($mL);
+        $this->arrivalLabelTcpdfSetGlyphFont($pdf, $houseRoad, $f4, true);
+        $remainingH = $pdf->getPageHeight() - $pdf->GetY() - max(0.9, (float) $margins['bottom']);
+        $h4 = min(12.35, max(8.2, max(0.0, $remainingH)));
+        $pdf->Cell($contentW, $h4, $houseRoad, 0, 0, 'L', false, '', 0, false, 'T', 'M');
+
+        $out = $pdf->Output('', 'S');
+        return is_string($out) ? $out : '';
+    }
+
+    /** 无 TCPDF 时的极简 PDF（Helvetica，非拉丁文会乱码）；勿删，作兜底。 */
+    private function renderArrivalLabelPdfBinaryLegacy(array $label): string
+    {
+        // 可视区：宽 75mm × 长 100mm（与 HTML / TCPDF 当前试向一致）
+        $wPt = 75.0 / 25.4 * 72.0;
+        $hPt = 100.0 / 25.4 * 72.0;
         $rp = trim((string)($label['route_primary'] ?? ''));
         $rs = trim((string)($label['route_secondary'] ?? ''));
         $routes = ($rp !== '' && $rs !== '') ? ($rp . ' / ' . $rs) : ($rp !== '' ? $rp : ($rs !== '' ? $rs : '-'));
-        $lines = [
-            '客户编码: ' . (string)($label['customer_code'] ?? '-'),
-            '微信号: ' . (string)($label['wechat_id'] ?? '-'),
-            '主/副路线: ' . $routes,
-            '泰文小区: ' . (string)($label['community_name_th'] ?? '-'),
-            '完整地址: ' . (trim((string)($label['addr_th_full'] ?? '')) !== '' ? (string)$label['addr_th_full'] : (string)($label['lane_or_house_no'] ?? '-')),
-            '未派送总件数: ' . (string)($label['pending_count'] ?? '0'),
-            '原始单号: ' . (string)($label['tracking_no'] ?? '-'),
-        ];
-        $y = $hPt - 20.0;
-        $lineGap = 18.0;
-        $stream = "BT\n/F1 11 Tf\n";
-        foreach ($lines as $line) {
-            $stream .= sprintf("1 0 0 1 10 %.2f Tm (%s) Tj\n", $y, $this->pdfEscape($line));
-            $y -= $lineGap;
-            if ($y < 12) {
+        $houseRoad = $this->arrivalLabelHouseRoadLine((string)($label['addr_house_no'] ?? ''), (string)($label['addr_road_soi'] ?? ''));
+        if ($houseRoad === '') {
+            $houseRoad = '-';
+        }
+        $code = trim((string)($label['customer_code'] ?? '')) !== '' ? trim((string)$label['customer_code']) : '-';
+        $wx = trim((string)($label['wechat_id'] ?? '')) !== '' ? trim((string)$label['wechat_id']) : '-';
+        $pending = (string)($label['pending_count'] ?? '0');
+        $community = trim((string)($label['community_name_th'] ?? '')) !== '' ? trim((string)$label['community_name_th']) : '-';
+        $line1 = $code . '   ' . $routes;
+        $line2 = $wx . '   ' . $pending;
+        // 与 HTML 一致用 pt，避免与 mm 两套体系在回退 PDF 里再偏一档
+        $f1 = 18.5;
+        $f2 = 15.0;
+        $f3 = 12.0;
+        $legacyXpt = 11.0;
+        $maxW4 = max(36.0, $wPt - (2.0 * $legacyXpt));
+        $f4 = 15.0;
+        $len4 = max(1, mb_strlen($houseRoad, 'UTF-8'));
+        while ($f4 > 9.0) {
+            $est = $len4 * 0.56 * $f4;
+            if ($est <= $maxW4) {
                 break;
             }
+            $f4 -= 0.5;
+        }
+        $lineSpecs = [
+            ['text' => $line1, 'size' => $f1],
+            ['text' => $line2, 'size' => $f2],
+            ['text' => $community, 'size' => $f3],
+            ['text' => $houseRoad, 'size' => $f4],
+        ];
+        // 四行基线在 100mm 高度内均分，避免内容挤在顶端且留白过大
+        $marginTop = 2.92;
+        $marginBottom = 6.25;
+        $highY = $hPt - $marginTop;
+        $lowY = $marginBottom;
+        $span = max(48.0, $highY - $lowY);
+        $ys = [];
+        for ($i = 0; $i < 4; $i++) {
+            $ys[] = $highY - ($span * $i / 3.0);
+        }
+        $stream = "BT\n";
+        foreach ($lineSpecs as $i => $spec) {
+            $stream .= sprintf("/%s %.2f Tf\n", $i === 3 ? 'F2' : 'F1', $spec['size']);
+            $stream .= sprintf("1 0 0 1 %.2f %.2f Tm (%s) Tj\n", $legacyXpt, $ys[$i], $this->pdfEscape($spec['text']));
         }
         $stream .= "ET\n";
         $len = strlen($stream);
@@ -1193,12 +2091,13 @@ class DispatchController
         $objs[] = "1 0 obj\n<< /Type /Catalog /Pages 2 0 R >>\nendobj\n";
         $objs[] = "2 0 obj\n<< /Type /Pages /Kids [3 0 R] /Count 1 >>\nendobj\n";
         $objs[] = sprintf(
-            "3 0 obj\n<< /Type /Page /Parent 2 0 R /MediaBox [0 0 %.2f %.2f] /Resources << /Font << /F1 4 0 R >> >> /Contents 5 0 R >>\nendobj\n",
+            "3 0 obj\n<< /Type /Page /Parent 2 0 R /MediaBox [0 0 %.2f %.2f] /Resources << /Font << /F1 4 0 R /F2 5 0 R >> >> /Contents 6 0 R >>\nendobj\n",
             $wPt,
             $hPt
         );
         $objs[] = "4 0 obj\n<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica >>\nendobj\n";
-        $objs[] = "5 0 obj\n<< /Length {$len} >>\nstream\n{$stream}endstream\nendobj\n";
+        $objs[] = "5 0 obj\n<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica-Bold >>\nendobj\n";
+        $objs[] = "6 0 obj\n<< /Length {$len} >>\nstream\n{$stream}endstream\nendobj\n";
 
         $pdf = "%PDF-1.4\n";
         $offsets = [0];
@@ -1231,7 +2130,10 @@ class DispatchController
         @file_put_contents($dir . '/' . $token . '.json', json_encode($payload, JSON_UNESCAPED_UNICODE));
         $pdfReason = '';
         $pdfFile = $this->generateArrivalLabelPdfFile($token, $pdfReason);
-        $pdfMode = ($pdfFile !== null && is_file($pdfFile) && (int)@filesize($pdfFile) > 0) ? 'edge' : 'fallback';
+        $pdfOk = $pdfFile !== null && is_file($pdfFile) && (int)@filesize($pdfFile) > 0;
+        $pdfMode = $pdfOk
+            ? ((strpos($pdfReason, 'php_binary') !== false || strpos($pdfReason, 'replaced_pagesize') !== false) ? 'php_pdf' : 'edge')
+            : 'fallback';
         $pdfDebug = $pdfReason;
         return $this->buildAbsoluteUrl('/dispatch/arrival-label-pdf?t=' . urlencode($token));
     }
@@ -1267,6 +2169,7 @@ class DispatchController
         $stmt = $conn->prepare("
             SELECT
                 w.id,
+                w.consigning_client_id,
                 w.original_tracking_no,
                 w.order_status,
                 {$optOutSelect}
@@ -1276,11 +2179,14 @@ class DispatchController
                 w.delivery_customer_code,
                 dc.customer_code,
                 dc.wechat_id,
+                dc.line_id,
                 dc.route_primary,
                 dc.customer_state,
                 dc.route_secondary,
                 dc.community_name_th,
-                dc.addr_th_full
+                dc.addr_th_full,
+                dc.addr_house_no,
+                dc.addr_road_soi
             FROM dispatch_waybills w
             LEFT JOIN dispatch_delivery_customers dc ON dc.id = w.delivery_customer_id
             WHERE w.original_tracking_no = ?
@@ -1393,6 +2299,8 @@ class DispatchController
         $up->bind_param('si', $inboundStatus, $waybillId);
         $up->execute();
         $up->close();
+        $ccIdForReopen = (int)($row['consigning_client_id'] ?? 0);
+        $this->reopenBindingListWaybillsForDeliveryCustomer($conn, $ccIdForReopen, $deliveryId, $matchedCode, $waybillId);
         $this->writeAuditLog(
             $conn,
             'dispatch',
@@ -1416,14 +2324,19 @@ class DispatchController
             $count->close();
         }
 
+        $wxOnly = trim((string)($row['wechat_id'] ?? ''));
+        $lineOnly = trim((string)($row['line_id'] ?? ''));
+        $wechatLineDisp = $wxOnly === '' ? $lineOnly : ($lineOnly === '' ? $wxOnly : ($wxOnly . ' / ' . $lineOnly));
         $label = [
             'tracking_no' => (string)($row['original_tracking_no'] ?? $trackingNo),
             'customer_code' => $matchedCode,
-            'wechat_id' => trim((string)($row['wechat_id'] ?? '')),
+            'wechat_id' => $wechatLineDisp,
             'route_primary' => trim((string)($row['route_primary'] ?? '')),
             'route_secondary' => trim((string)($row['route_secondary'] ?? '')),
             'community_name_th' => trim((string)($row['community_name_th'] ?? '')),
             'addr_th_full' => trim((string)($row['addr_th_full'] ?? '')),
+            'addr_house_no' => trim((string)($row['addr_house_no'] ?? '')),
+            'addr_road_soi' => trim((string)($row['addr_road_soi'] ?? '')),
             'pending_count' => $pendingCount,
         ];
 
@@ -1718,7 +2631,8 @@ class DispatchController
         $in2 = implode(',', array_fill(0, count($validIds), '?'));
         $types2 = 's' . str_repeat('i', count($validIds));
         $params2 = array_merge(['待转发'], $validIds);
-        $up = $conn->prepare("UPDATE dispatch_waybills SET order_status = ?, delivered_at = NOW() WHERE id IN ($in2)");
+        $clearFrag = $this->sqlClearBindingCompletedForBindingListStatuses($conn, '待转发');
+        $up = $conn->prepare("UPDATE dispatch_waybills SET order_status = ?, delivered_at = NOW(){$clearFrag} WHERE id IN ($in2)");
         if (!$up) {
             return ['ok' => false, 'error' => '更新失败，请稍后再试', 'code' => 'db_error'];
         }
@@ -1726,6 +2640,24 @@ class DispatchController
         $up->execute();
         $pushedCount = (int)$up->affected_rows;
         $up->close();
+
+        $firstId = (int)$validIds[0];
+        if ($firstId > 0) {
+            $mst = $conn->prepare('SELECT consigning_client_id, delivery_customer_id FROM dispatch_waybills WHERE id = ? LIMIT 1');
+            if ($mst) {
+                $mst->bind_param('i', $firstId);
+                $mst->execute();
+                $mr = $mst->get_result()->fetch_assoc();
+                $mst->close();
+                if (is_array($mr)) {
+                    $ccRe = (int)($mr['consigning_client_id'] ?? 0);
+                    $dcRe = (int)($mr['delivery_customer_id'] ?? 0);
+                    if ($ccRe > 0 && $dcRe > 0) {
+                        $this->reopenBindingListWaybillsForDeliveryCustomer($conn, $ccRe, $dcRe, $customerCode, $firstId);
+                    }
+                }
+            }
+        }
 
         $this->writeAuditLog(
             $conn,
@@ -1856,19 +2788,51 @@ class DispatchController
         if (!$pairs) {
             return ['ok' => false, 'error' => '未找到有效的状态修改项', 'code' => 'invalid_selection'];
         }
-        $up = $conn->prepare('UPDATE dispatch_waybills SET order_status = ?, delivered_at = NOW() WHERE id = ? LIMIT 1');
-        if (!$up) {
+        $hasBindCol = $this->columnExists($conn, 'dispatch_waybills', 'binding_completed_at');
+        $upPlain = $conn->prepare('UPDATE dispatch_waybills SET order_status = ?, delivered_at = NOW() WHERE id = ? LIMIT 1');
+        $upClear = $hasBindCol
+            ? $conn->prepare('UPDATE dispatch_waybills SET order_status = ?, delivered_at = NOW(), binding_completed_at = NULL WHERE id = ? LIMIT 1')
+            : null;
+        if (!$upPlain) {
+            return ['ok' => false, 'error' => '更新失败，请稍后再试', 'code' => 'db_error'];
+        }
+        if ($hasBindCol && !$upClear) {
+            $upPlain->close();
             return ['ok' => false, 'error' => '更新失败，请稍后再试', 'code' => 'db_error'];
         }
         $updated = 0;
         foreach ($pairs as $p) {
             $sid = (int)$p['id'];
             $sst = (string)$p['status'];
-            $up->bind_param('si', $sst, $sid);
-            $up->execute();
-            if ((int)$up->affected_rows > 0) $updated++;
+            $useClear = $upClear !== null && in_array($sst, ['已入库', '待转发', '待自取'], true);
+            $st = $useClear ? $upClear : $upPlain;
+            $st->bind_param('si', $sst, $sid);
+            $st->execute();
+            if ((int)$st->affected_rows > 0) {
+                $updated++;
+                if (in_array($sst, ['已入库', '待转发', '待自取'], true)) {
+                    $wm = $conn->prepare('SELECT consigning_client_id, delivery_customer_id, delivery_customer_code FROM dispatch_waybills WHERE id = ? LIMIT 1');
+                    if ($wm) {
+                        $wm->bind_param('i', $sid);
+                        $wm->execute();
+                        $wr = $wm->get_result()->fetch_assoc();
+                        $wm->close();
+                        if (is_array($wr)) {
+                            $ccR = (int)($wr['consigning_client_id'] ?? 0);
+                            $dcR = (int)($wr['delivery_customer_id'] ?? 0);
+                            $codeR = trim((string)($wr['delivery_customer_code'] ?? ''));
+                            if ($ccR > 0 && $dcR > 0) {
+                                $this->reopenBindingListWaybillsForDeliveryCustomer($conn, $ccR, $dcR, $codeR, $sid);
+                            }
+                        }
+                    }
+                }
+            }
         }
-        $up->close();
+        $upPlain->close();
+        if ($upClear) {
+            $upClear->close();
+        }
         $this->writeAuditLog(
             $conn,
             'dispatch',
@@ -2009,6 +2973,7 @@ class DispatchController
                         $upAddr->execute();
                         $upAddr->close();
                     }
+                    $this->syncDeliveryCustomerThGeoFromImportRow($conn, $newId, $ccId, $addrHouseNo, $addrRoadSoi, $addrMooVillage, $addrProvince, $addrAmphoe, $addrTambon, $addrZipcode);
                 }
                 $stmt->close();
                 $this->notifyForwardCustomerSyncFromDelivery($conn, $customerCode);
@@ -2125,6 +3090,7 @@ class DispatchController
                     $upAddr->execute();
                     $upAddr->close();
                 }
+                $this->syncDeliveryCustomerThGeoFromImportRow($conn, $newId, $ccId, $addrHouseNo, $addrRoadSoi, $addrMooVillage, $addrProvince, $addrAmphoe, $addrTambon, $addrZipcode);
             }
             $stmt->close();
             $this->notifyForwardCustomerSyncFromDelivery($conn, $customerCode);
@@ -2393,6 +3359,7 @@ class DispatchController
                     $upAddr->execute();
                     $upAddr->close();
                 }
+                $this->syncDeliveryCustomerThGeoFromImportRow($conn, $deliveryId, $ccId, $addrHouseNo, $addrRoadSoi, $addrMooVillage, $addrProvince, $addrAmphoe, $addrTambon, $addrZipcode);
             }
             $changedAddress = trim($addrHouseNo) !== $oldH || trim($addrRoadSoi) !== $oldR || trim($addrMooVillage) !== $oldM
                 || trim($addrTambon) !== $oldT || trim($addrAmphoe) !== $oldA || trim($addrProvince) !== $oldP || trim($addrZipcode) !== $oldZ
@@ -2408,6 +3375,13 @@ class DispatchController
             $this->removeForwardCustomerAfterDeliveryRouteLeavesOt($conn, $oldCustomerCodeForForward, $oldRoutePrimary, $rp);
             $u->close();
             $this->notifyForwardCustomerSyncFromDelivery($conn, $customerCode);
+            if ($hasCustState && $this->deliveryCustomerBusinessStateIsRestricted($custStateNorm)) {
+                try {
+                    $this->detachInboundWaybillsFromPreliminaryDispatchForDeliveryCustomer($conn, $deliveryId, $ccId, $customerCode);
+                } catch (Throwable $e) {
+                    // 导入已写库；解绑失败不使整行导入失败
+                }
+            }
             return ['ok' => true, 'error' => ''];
         } catch (mysqli_sql_exception $e) {
             $u->close();
@@ -2545,10 +3519,47 @@ class DispatchController
         return ['ok' => false, 'error' => $ins['error'] !== '' ? $ins['error'] : '保存失败', 'action' => ''];
     }
 
+    /**
+     * 订单查询筛选：曾在派送工作流中被指派过的司机（去重）。
+     *
+     * @return list<array{id: int, label: string}>
+     */
+    private function dispatchOrderFilterAssignedDriverOptions(mysqli $conn): array
+    {
+        if (!$this->tableExists($conn, 'dispatch_delivery_doc_workflow')) {
+            return [];
+        }
+        $out = [];
+        $sql = "
+            SELECT DISTINCT wf.assigned_driver_user_id AS id,
+                TRIM(COALESCE(NULLIF(u.full_name, ''), u.username, '')) AS label
+            FROM dispatch_delivery_doc_workflow wf
+            INNER JOIN users u ON u.id = wf.assigned_driver_user_id
+            WHERE wf.assigned_driver_user_id IS NOT NULL
+            ORDER BY label ASC, wf.assigned_driver_user_id ASC
+        ";
+        $res = $conn->query($sql);
+        if ($res) {
+            while ($row = $res->fetch_assoc()) {
+                $id = (int)($row['id'] ?? 0);
+                if ($id <= 0) {
+                    continue;
+                }
+                $label = trim((string)($row['label'] ?? ''));
+                if ($label === '') {
+                    $label = '#' . (string)$id;
+                }
+                $out[] = ['id' => $id, 'label' => $label];
+            }
+        }
+
+        return $out;
+    }
+
     public function index(): void
     {
         $this->requireDispatchMenu();
-        if (!$this->hasAnyPermission(['dispatch.waybills.view', 'dispatch.waybills.import', 'dispatch.manage'])) {
+        if (!$this->hasAnyPermission(['menu.nav.dispatch.orders', 'dispatch.waybills.view', 'dispatch.waybills.import', 'dispatch.manage'])) {
             $this->denyNoPermission('无权限查看订单列表');
         }
         $conn = require __DIR__ . '/../../config/database.php';
@@ -2562,6 +3573,9 @@ class DispatchController
         }
         $this->ensureDispatchSchema($conn);
         $ordersSchemaV2 = $this->columnExists($conn, 'dispatch_waybills', 'order_status');
+        if ($ordersSchemaV2) {
+            $this->ensureDispatchWaybillDeliveryDriverName($conn);
+        }
         $migrationHint = $ordersSchemaV2
             ? ''
             : '尚未执行数据库脚本 022：当前为「基础订单」模式（无订单状态/导入日期/扫描派送时间等栏位）。请执行 database/migrations/022_dispatch_waybill_order_fields.sql 后刷新，即可使用完整订单字段与派送照片表。';
@@ -2662,9 +3676,30 @@ class DispatchController
         $qWechat = trim((string)($_GET['q_wechat'] ?? ''));
         $qInbound = trim((string)($_GET['q_inbound'] ?? ''));
         $qStatus = trim((string)($_GET['q_status'] ?? ''));
-        $qScanDate = trim((string)($_GET['q_scan_date'] ?? ''));
+        $qDeliveredFrom = trim((string)($_GET['q_delivered_from'] ?? ''));
+        $qDeliveredTo = trim((string)($_GET['q_delivered_to'] ?? ''));
+        $qImportFrom = trim((string)($_GET['q_import_from'] ?? ''));
+        $qImportTo = trim((string)($_GET['q_import_to'] ?? ''));
         if ($qStatus !== '' && !in_array($qStatus, $this->orderStatusCatalog(), true)) {
             $qStatus = '';
+        }
+
+        $driverFilterSchemaOk = $ordersSchemaV2
+            && $this->tableExists($conn, 'dispatch_delivery_doc_workflow')
+            && $this->columnExists($conn, 'dispatch_waybills', 'delivery_doc_no');
+        $assignedDriverOptions = [];
+        $qDriverId = (int)($_GET['q_driver_id'] ?? 0);
+        if ($driverFilterSchemaOk) {
+            $assignedDriverOptions = $this->dispatchOrderFilterAssignedDriverOptions($conn);
+            $validDriverIds = array_values(array_unique(array_map(
+                static fn (array $r): int => (int)($r['id'] ?? 0),
+                $assignedDriverOptions
+            )));
+            if ($qDriverId > 0 && !in_array($qDriverId, $validDriverIds, true)) {
+                $qDriverId = 0;
+            }
+        } else {
+            $qDriverId = 0;
         }
 
         $page = $this->resolvePage();
@@ -2709,21 +3744,59 @@ class DispatchController
                 $types .= 's';
                 $params[] = $qStatus;
             }
-            if ($ordersSchemaV2 && $qScanDate !== '' && preg_match('/^\d{4}-\d{2}-\d{2}$/', $qScanDate)) {
-                $w[] = 'DATE(w.scanned_at) = ?';
+            if ($driverFilterSchemaOk && $qDriverId > 0) {
+                $w[] = 'EXISTS (
+                    SELECT 1 FROM dispatch_delivery_doc_workflow wf_drv
+                    WHERE (wf_drv.delivery_doc_no COLLATE utf8mb4_unicode_ci) = (w.delivery_doc_no COLLATE utf8mb4_unicode_ci)
+                      AND wf_drv.assigned_driver_user_id = ?
+                )';
+                $types .= 'i';
+                $params[] = $qDriverId;
+            }
+            if ($ordersSchemaV2 && $qDeliveredFrom !== '' && preg_match('/^\d{4}-\d{2}-\d{2}$/', $qDeliveredFrom)) {
+                $w[] = '(w.delivered_at IS NOT NULL AND DATE(w.delivered_at) >= ?)';
                 $types .= 's';
-                $params[] = $qScanDate;
+                $params[] = $qDeliveredFrom;
+            }
+            if ($ordersSchemaV2 && $qDeliveredTo !== '' && preg_match('/^\d{4}-\d{2}-\d{2}$/', $qDeliveredTo)) {
+                $w[] = '(w.delivered_at IS NOT NULL AND DATE(w.delivered_at) <= ?)';
+                $types .= 's';
+                $params[] = $qDeliveredTo;
+            }
+            if (
+                $ordersSchemaV2
+                && $this->columnExists($conn, 'dispatch_waybills', 'import_date')
+                && $qImportFrom !== ''
+                && preg_match('/^\d{4}-\d{2}-\d{2}$/', $qImportFrom)
+            ) {
+                $w[] = '(w.import_date IS NOT NULL AND DATE(w.import_date) >= ?)';
+                $types .= 's';
+                $params[] = $qImportFrom;
+            }
+            if (
+                $ordersSchemaV2
+                && $this->columnExists($conn, 'dispatch_waybills', 'import_date')
+                && $qImportTo !== ''
+                && preg_match('/^\d{4}-\d{2}-\d{2}$/', $qImportTo)
+            ) {
+                $w[] = '(w.import_date IS NOT NULL AND DATE(w.import_date) <= ?)';
+                $types .= 's';
+                $params[] = $qImportTo;
             }
             $whereSql = implode(' AND ', $w);
             if (isset($_GET['export']) && (string)$_GET['export'] === 'current') {
+                $driverCol = $this->columnExists($conn, 'dispatch_waybills', 'delivery_driver_name')
+                    ? 'COALESCE(w.delivery_driver_name, \'\') AS delivery_driver_name'
+                    : '\'\' AS delivery_driver_name';
                 $sqlExport = "SELECT
                         w.original_tracking_no, w.delivery_customer_code,
                         COALESCE(NULLIF(dc.wechat_id, ''), '') AS wechat_id,
                         COALESCE(NULLIF(dc.line_id, ''), '') AS line_id,
-                        w.quantity, w.weight_kg, w.length_cm, w.width_cm, w.height_cm, w.volume_m3, w.inbound_batch,
+                        w.quantity, w.weight_kg, w.volume_m3, w.inbound_batch,
                         COALESCE(DATE_FORMAT(w.scanned_at, '%Y-%m-%d %H:%i:%s'), '') AS scanned_at,
                         COALESCE(DATE_FORMAT(w.delivered_at, '%Y-%m-%d %H:%i:%s'), '') AS status_updated_at,
                         COALESCE(w.order_status, '') AS order_status,
+                        {$driverCol},
                         cc.client_code AS consigning_client_code,
                         cc.client_name AS consigning_client_name
                     FROM dispatch_waybills w
@@ -2744,25 +3817,26 @@ class DispatchController
                     }
                     $stmtExp->close();
                 }
-                $csv = "原始单号,客户编码,微信/Line,数量,重量,长,宽,高,入库批次,入库时间,最后状态更新时间,订单状态,委托客户\n";
+                $csv = "原始单号,客户编码,微信/Line,数量,重量,体积,入库批次,入库时间,最后状态更新时间,订单状态,派送司机,委托客户\n";
                 foreach ($rowsExp as $er) {
                     $wx = trim((string)($er['wechat_id'] ?? ''));
                     $ln = trim((string)($er['line_id'] ?? ''));
                     $wxLine = $wx === '' ? $ln : ($ln === '' ? $wx : ($wx . ' / ' . $ln));
                     $consigning = trim((string)($er['consigning_client_code'] ?? '') . ' ' . (string)($er['consigning_client_name'] ?? ''));
+                    $vol = $er['volume_m3'] ?? '';
+                    $volStr = $vol === null || $vol === '' ? '' : (string)$vol;
                     $vals = [
                         (string)($er['original_tracking_no'] ?? ''),
                         (string)($er['delivery_customer_code'] ?? ''),
                         $wxLine,
                         (string)($er['quantity'] ?? ''),
                         (string)($er['weight_kg'] ?? ''),
-                        (string)($er['length_cm'] ?? ''),
-                        (string)($er['width_cm'] ?? ''),
-                        (string)($er['height_cm'] ?? ''),
+                        $volStr,
                         (string)($er['inbound_batch'] ?? ''),
                         (string)($er['scanned_at'] ?? ''),
                         (string)($er['status_updated_at'] ?? ''),
                         (string)($er['order_status'] ?? ''),
+                        (string)($er['delivery_driver_name'] ?? ''),
                         $consigning,
                     ];
                     $esc = array_map(static function (string $v): string {
@@ -2789,13 +3863,27 @@ class DispatchController
             $typesList = $types . 'ii';
             $paramsList = array_merge($params, [$perPage, $offset]);
             $addrColsList = $this->sqlJoinDeliveryCustomerAddrColumns($conn, 'dc');
+            $podJoin = '';
+            $podSelect = 'NULL AS pod_photo_1, NULL AS pod_photo_2';
+            if (
+                $ordersSchemaV2
+                && $this->tableExists($conn, 'dispatch_delivery_pod')
+                && $this->columnExists($conn, 'dispatch_waybills', 'delivery_doc_no')
+            ) {
+                $podJoin = "
+                LEFT JOIN dispatch_delivery_pod pod ON (pod.delivery_doc_no COLLATE utf8mb4_unicode_ci) = (w.delivery_doc_no COLLATE utf8mb4_unicode_ci)
+                    AND (pod.customer_code COLLATE utf8mb4_unicode_ci) = (COALESCE(NULLIF(TRIM(dc.customer_code), ''), NULLIF(TRIM(w.delivery_customer_code), '')) COLLATE utf8mb4_unicode_ci)";
+                $podSelect = 'pod.photo_1 AS pod_photo_1, pod.photo_2 AS pod_photo_2';
+            }
             $sqlList = "SELECT w.*, cc.client_code AS consigning_client_code, cc.client_name AS consigning_client_name,
                     dc.customer_code AS resolved_customer_code, dc.wechat_id AS resolved_wechat, dc.line_id AS resolved_line,
                     {$addrColsList}, dc.latitude, dc.longitude, dc.route_primary, dc.route_secondary, dc.routes_combined,
-                    dc.community_name_en, dc.community_name_th
+                    dc.community_name_en, dc.community_name_th,
+                    {$podSelect}
                 FROM dispatch_waybills w
                 INNER JOIN dispatch_consigning_clients cc ON cc.id = w.consigning_client_id
                 LEFT JOIN dispatch_delivery_customers dc ON dc.id = w.delivery_customer_id
+                {$podJoin}
                 WHERE {$whereSql}
                 ORDER BY w.id DESC
                 LIMIT ? OFFSET ?";
@@ -2837,7 +3925,8 @@ class DispatchController
         $canSelfPickup = $this->hasAnyPermission(['dispatch.package_ops.self_pickup', 'dispatch.manage']);
         $canForwardPush = $this->hasAnyPermission(['dispatch.package_ops.status_fix', 'dispatch.manage']);
         $canStatusFix = $this->hasAnyPermission(['dispatch.package_ops.status_fix', 'dispatch.manage']);
-        if (!$canArrivalScan && !$canSelfPickup && !$canForwardPush && !$canStatusFix) {
+        $canMenuPackageOps = $this->hasAnyPermission(['menu.nav.dispatch.package_ops']);
+        if (!$canArrivalScan && !$canSelfPickup && !$canForwardPush && !$canStatusFix && !$canMenuPackageOps) {
             $this->denyNoPermission('无权限执行货件操作');
         }
         $conn = require __DIR__ . '/../../config/database.php';
@@ -3093,7 +4182,7 @@ class DispatchController
     public function qzCertificate(): void
     {
         $this->requireDispatchMenu();
-        if (!$this->hasAnyPermission(['dispatch.waybills.edit', 'dispatch.manage'])) {
+        if (!$this->hasAnyPermission(['menu.nav.dispatch.ops.pick_sheets', 'menu.nav.dispatch.ops.formal_docs', 'dispatch.waybills.edit', 'dispatch.manage'])) {
             $this->denyNoPermission('无权限获取打印证书');
         }
         header('Content-Type: text/plain; charset=utf-8');
@@ -3115,7 +4204,7 @@ class DispatchController
     public function qzSign(): void
     {
         $this->requireDispatchMenu();
-        if (!$this->hasAnyPermission(['dispatch.waybills.edit', 'dispatch.manage'])) {
+        if (!$this->hasAnyPermission(['menu.nav.dispatch.ops.pick_sheets', 'menu.nav.dispatch.ops.formal_docs', 'dispatch.waybills.edit', 'dispatch.manage'])) {
             $this->denyNoPermission('无权限执行打印签名');
         }
         header('Content-Type: text/plain; charset=utf-8');
@@ -3158,7 +4247,7 @@ class DispatchController
     public function orderImport(): void
     {
         $this->requireDispatchMenu();
-        if (!$this->hasAnyPermission(['dispatch.waybills.import', 'dispatch.manage'])) {
+        if (!$this->hasAnyPermission(['menu.nav.dispatch.order_import', 'dispatch.waybills.import', 'dispatch.manage'])) {
             $this->denyNoPermission('无权限导入订单');
         }
         $conn = require __DIR__ . '/../../config/database.php';
@@ -3185,6 +4274,9 @@ class DispatchController
         $importDate = date('Y-m-d');
 
         if (isset($_GET['export']) && (string)$_GET['export'] === 'order_csv_template') {
+            if (OrderImportSheet::isAvailable()) {
+                OrderImportSheet::sendTemplateDownload('CLIENT001');
+            }
             $header = "委托客户编码,原始单号,派送客户编号,重量(kg),长(cm),宽(cm),高(cm),体积(m³),数量,入库批次,订单状态\n";
             $example = "CLIENT001,TH1234567890,R001,1.5,30,20,10,0.02,1,BATCH20260401,待入库\n";
             $this->sendCsvDownload('订单导入模板.csv', $header . $example);
@@ -3229,44 +4321,68 @@ class DispatchController
             }
         }
 
-        if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['import_orders_csv'])) {
+        if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['import_orders'])) {
             if ($dispatchBoundClientMissing) {
                 $error = '当前账号绑定的委托客户不存在或已删除，无法导入。请联系管理员检查用户绑定。';
-            } elseif (!isset($_FILES['orders_csv']) || !is_uploaded_file((string)($_FILES['orders_csv']['tmp_name'] ?? ''))) {
-                $error = '请选择要上传的 CSV 文件';
+            } elseif (!isset($_FILES['orders_import_file']) || !is_uploaded_file((string)($_FILES['orders_import_file']['tmp_name'] ?? ''))) {
+                $error = '请选择要上传的文件（.xlsx / .xls / .csv）';
             } else {
-                $tmp = (string)$_FILES['orders_csv']['tmp_name'];
-                $fh = fopen($tmp, 'rb');
-                if (!$fh) {
-                    $error = '无法读取上传文件';
+                $tmp = (string)$_FILES['orders_import_file']['tmp_name'];
+                $origName = (string)($_FILES['orders_import_file']['name'] ?? '');
+                $ext = strtolower((string)pathinfo($origName, PATHINFO_EXTENSION));
+                $headerRow = null;
+                $rowsWithLine = [];
+                if ($ext === 'csv') {
+                    $fh = fopen($tmp, 'rb');
+                    if (!$fh) {
+                        $error = '无法读取上传文件';
+                    } else {
+                        $headerRow = fgetcsv($fh);
+                        $csvRowIndex = 1;
+                        while (($row = fgetcsv($fh)) !== false) {
+                            $csvRowIndex++;
+                            if ($row === [null] || $row === false || (count($row) === 1 && trim((string)($row[0] ?? '')) === '')) {
+                                continue;
+                            }
+                            $rowsWithLine[] = [
+                                'line' => $csvRowIndex,
+                                'row' => array_values(array_map(static fn ($v) => trim((string)$v), $row)),
+                            ];
+                        }
+                        fclose($fh);
+                    }
+                } elseif (in_array($ext, ['xlsx', 'xls'], true)) {
+                    if (!OrderImportSheet::isAvailable()) {
+                        $error = '服务器未加载 PhpSpreadsheet：请在项目根目录执行 composer install，并启用 PHP zip 扩展。';
+                    } else {
+                        $loaded = OrderImportSheet::loadMatrixFromUpload($tmp, $origName);
+                        if (!$loaded['ok']) {
+                            $error = $loaded['error'] !== '' ? $loaded['error'] : 'Excel 读取失败';
+                        } else {
+                            $headerRow = $loaded['headers'];
+                            $lineNo = 1;
+                            foreach ($loaded['rows'] as $row) {
+                                $lineNo++;
+                                $rowsWithLine[] = ['line' => $lineNo, 'row' => $row];
+                            }
+                        }
+                    }
                 } else {
-                    $headerRow = fgetcsv($fh);
+                    $error = '不支持的文件类型，请上传 .xlsx、.xls 或 .csv';
+                }
+                if ($error === '') {
                     $ok = 0;
                     $dup = 0;
                     $fail = 0;
                     $failureLog = [];
                     $failureLogMax = 200;
-                    $csvRowIndex = 1;
-                    while (($row = fgetcsv($fh)) !== false) {
-                        $csvRowIndex++;
-                        if ($row === [null] || $row === false || (count($row) === 1 && trim((string)($row[0] ?? '')) === '')) {
-                            continue;
-                        }
-                        $map = [];
-                        if (is_array($headerRow)) {
-                            foreach ($headerRow as $i => $key) {
-                                $k = trim((string)$key);
-                                if (str_starts_with($k, "\xEF\xBB\xBF")) {
-                                    $k = trim(substr($k, 3));
-                                }
-                                if ($k !== '') {
-                                    $canon = $this->canonicalOrderImportCsvField($k);
-                                    if ($canon !== '') {
-                                        $map[$canon] = trim((string)($row[$i] ?? ''));
-                                    }
-                                }
-                            }
-                        }
+                    if (!is_array($headerRow)) {
+                        $error = '导入文件表头读取失败';
+                    } else {
+                        foreach ($rowsWithLine as $item) {
+                            $csvRowIndex = (int)($item['line'] ?? 0);
+                            $row = is_array($item['row'] ?? null) ? $item['row'] : [];
+                            $map = $this->orderImportBuildRowMap($headerRow, $row);
                         $ccCode = (string)($map['consigning_client_code'] ?? '');
                         $track = (string)($map['original_tracking_no'] ?? '');
                         $dcode = (string)($map['delivery_customer_code'] ?? '');
@@ -3334,11 +4450,13 @@ class DispatchController
                             }
                         }
                     }
-                    fclose($fh);
-                    $importFailureDetails = $failureLog;
-                    $message = "导入完成：成功 {$ok} 条，重复跳过 {$dup} 条，失败 {$fail} 条";
-                    if ($fail > $failureLogMax) {
-                        $message .= '（下方仅列出前 ' . (string)$failureLogMax . ' 条失败原因）';
+                    }
+                    if ($error === '') {
+                        $importFailureDetails = $failureLog;
+                        $message = "导入完成：成功 {$ok} 条，重复跳过 {$dup} 条，失败 {$fail} 条";
+                        if ($fail > $failureLogMax) {
+                            $message .= '（下方仅列出前 ' . (string)$failureLogMax . ' 条失败原因）';
+                        }
                     }
                 }
             }
@@ -3446,7 +4564,7 @@ class DispatchController
     public function consigningClients(): void
     {
         $this->requireDispatchMenu();
-        if (!$this->hasAnyPermission(['dispatch.consigning_clients.view', 'dispatch.manage'])) {
+        if (!$this->hasAnyPermission(['menu.nav.dispatch.consigning_clients', 'dispatch.consigning_clients.view', 'dispatch.manage'])) {
             $this->denyNoPermission('无权限查看委托客户');
         }
         $conn = require __DIR__ . '/../../config/database.php';
@@ -3632,7 +4750,7 @@ class DispatchController
     public function deliveryCustomers(): void
     {
         $this->requireDispatchMenu();
-        if (!$this->hasAnyPermission(['dispatch.delivery_customers.view', 'dispatch.manage'])) {
+        if (!$this->hasAnyPermission(['menu.nav.dispatch.delivery_customers', 'dispatch.delivery_customers.view', 'dispatch.manage'])) {
             $this->denyNoPermission('无权限查看派送客户');
         }
         $conn = require __DIR__ . '/../../config/database.php';
@@ -3678,6 +4796,16 @@ class DispatchController
             // filterCcId === 0 表示「全部委托客户」，列表跨客户分页展示
         }
 
+        // 启用中委托客户仅有一个时：默认限定该客户，并隐藏委托客户筛选区块与列表列（内部账号；绑定账号仍走 hideConsigningSelectors）
+        if (!$hideConsigningSelectors && count($consigningOptions) === 1) {
+            $soloCcId = (int)($consigningOptions[0]['id'] ?? 0);
+            if ($soloCcId > 0) {
+                $filterCcId = $soloCcId;
+            }
+        }
+        $hideConsigningFilterAndColumn = $hideConsigningSelectors
+            || (!$dispatchBoundClientMissing && count($consigningOptions) === 1);
+
         if (isset($_GET['export']) && (string)$_GET['export'] === 'delivery_csv_template') {
             $exCc = 'CLIENT001';
             if ($filterCcId > 0) {
@@ -3695,6 +4823,9 @@ class DispatchController
                 if ($c0 !== '') {
                     $exCc = $c0;
                 }
+            }
+            if (DeliveryCustomerImportSheet::isAvailable()) {
+                DeliveryCustomerImportSheet::sendTemplateDownload($exCc);
             }
             $hdr = "委托客户编码,派送客户编号,微信号,Line,收件人,电话,门牌号,路（巷）,村,镇（街道）（乡）,县（区）,府,Zipcode,定位,定位状态,主路线,副路线,小区英文名,小区泰文名,客户状态,客户要求\n";
             $exCcCsv = str_contains($exCc, ',') || str_contains($exCc, '"') || str_contains($exCc, "\n") || str_contains($exCc, "\r")
@@ -3730,6 +4861,9 @@ class DispatchController
         }
 
         if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['delivery_customer_state_update'])) {
+            while (ob_get_level() > 0) {
+                ob_end_clean();
+            }
             header('Content-Type: application/json; charset=utf-8');
             if (!$canEdit) {
                 http_response_code(403);
@@ -3746,7 +4880,7 @@ class DispatchController
                 echo json_encode(['ok' => false, 'error' => '参数无效'], JSON_UNESCAPED_UNICODE);
                 exit;
             }
-            $chk = $conn->prepare('SELECT id, consigning_client_id FROM dispatch_delivery_customers WHERE id = ? LIMIT 1');
+            $chk = $conn->prepare('SELECT id, consigning_client_id, customer_code FROM dispatch_delivery_customers WHERE id = ? LIMIT 1');
             if (!$chk) {
                 echo json_encode(['ok' => false, 'error' => '查询失败'], JSON_UNESCAPED_UNICODE);
                 exit;
@@ -3766,6 +4900,7 @@ class DispatchController
                 exit;
             }
             $ownerCcId = (int)($exists['consigning_client_id'] ?? 0);
+            $ownerCustCode = trim((string)($exists['customer_code'] ?? ''));
             if ($hideConsigningSelectors && $ownerCcId !== $boundCcId) {
                 echo json_encode(['ok' => false, 'error' => '无权修改该记录'], JSON_UNESCAPED_UNICODE);
                 exit;
@@ -3787,6 +4922,13 @@ class DispatchController
             if (!$okExec) {
                 echo json_encode(['ok' => false, 'error' => '更新失败'], JSON_UNESCAPED_UNICODE);
                 exit;
+            }
+            if ($this->deliveryCustomerBusinessStateIsRestricted($st)) {
+                try {
+                    $this->detachInboundWaybillsFromPreliminaryDispatchForDeliveryCustomer($conn, $did, $ownerCcId, $ownerCustCode);
+                } catch (Throwable $e) {
+                    // 状态已写入；解绑失败不应返回 HTML，否则前端 r.json() 报「网络错误」
+                }
             }
             echo json_encode(['ok' => true], JSON_UNESCAPED_UNICODE);
             exit;
@@ -4152,6 +5294,13 @@ class DispatchController
                             $u->close();
                         }
                         if ($error === '') {
+                            if ($this->deliveryCustomerBusinessStateIsRestricted($custState)) {
+                                try {
+                                    $this->detachInboundWaybillsFromPreliminaryDispatchForDeliveryCustomer($conn, $editId, $ownerCcId, $customerCode);
+                                } catch (Throwable $e) {
+                                    // 状态已保存；解绑失败不阻断整页保存
+                                }
+                            }
                             $this->removeForwardCustomerAfterDeliveryRouteLeavesOt($conn, $oldCustomerCodeForForward, $oldRoutePrimary, $rp);
                             if (!empty($fwdSync)) {
                                 $this->notifyForwardCustomerSyncFromDelivery($conn, $customerCode);
@@ -4182,250 +5331,127 @@ class DispatchController
             }
         }
 
-        if ($canEdit && $_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['import_delivery_csv'])) {
+        if ($canEdit && $_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['import_delivery_customers'])) {
             $ccCsv = (int)($_POST['csv_consigning_client_id'] ?? 0);
+            $upFile = isset($_FILES['delivery_import_file']) && is_array($_FILES['delivery_import_file'])
+                ? $_FILES['delivery_import_file']
+                : null;
             if ($dispatchBoundClientMissing) {
                 $error = '当前账号绑定的委托客户不存在或已删除，无法导入。请联系管理员检查用户绑定。';
             } elseif ($hideConsigningSelectors && $ccCsv !== $boundCcId) {
                 $error = '导入目标委托客户与当前账号绑定不一致';
-            } elseif (!isset($_FILES['delivery_csv']) || !is_uploaded_file((string)($_FILES['delivery_csv']['tmp_name'] ?? ''))) {
-                $error = '请选择 CSV 文件';
+            } elseif ($upFile === null || !is_uploaded_file((string)($upFile['tmp_name'] ?? ''))) {
+                $error = '请选择要上传的文件（.xlsx / .xls / .csv）';
             } else {
-                $fh = fopen((string)$_FILES['delivery_csv']['tmp_name'], 'rb');
-                if (!$fh) {
-                    $error = '无法读取上传文件';
-                } else {
-                    $headerRow = fgetcsv($fh);
-                    $deliveryCsvHasConsigningColumn = false;
-                    if (is_array($headerRow)) {
-                        foreach ($headerRow as $hKey) {
-                            $hk = trim((string)$hKey);
-                            if (str_starts_with($hk, "\xEF\xBB\xBF")) {
-                                $hk = trim(substr($hk, 3));
-                            }
-                            if ($this->canonicalDeliveryImportCsvField($hk) === 'consigning_client_code') {
-                                $deliveryCsvHasConsigningColumn = true;
-                                break;
-                            }
-                        }
-                    }
-                    if (!$deliveryCsvHasConsigningColumn && $ccCsv <= 0) {
-                        fclose($fh);
-                        $error = 'CSV 未包含「委托客户编码」列时，请先在上方选择委托客户后再导入；若需一次导入多个委托客户，请使用带「委托客户编码」列的模板。';
+                $tmpPath = (string)$upFile['tmp_name'];
+                $origName = (string)($upFile['name'] ?? '');
+                $ext = strtolower((string)pathinfo($origName, PATHINFO_EXTENSION));
+                if ($ext === 'csv') {
+                    $fh = fopen($tmpPath, 'rb');
+                    if (!$fh) {
+                        $error = '无法读取上传文件';
                     } else {
-                    $ok = 0;
-                    $upd = 0;
-                    $fail = 0;
-                    $failureLog = [];
-                    $failureLogMax = 200;
-                    $csvRowIndex = 1;
-                    while (($row = fgetcsv($fh)) !== false) {
-                        $csvRowIndex++;
-                        if ($row === [null] || (count($row) === 1 && trim((string)($row[0] ?? '')) === '')) {
-                            continue;
-                        }
-                        $map = [];
-                        if (is_array($headerRow)) {
-                            foreach ($headerRow as $i => $key) {
-                                $k = trim((string)$key);
-                                if (str_starts_with($k, "\xEF\xBB\xBF")) {
-                                    $k = trim(substr($k, 3));
-                                }
-                                if ($k === '') {
-                                    continue;
-                                }
-                                $canon = $this->canonicalDeliveryImportCsvField($k);
-                                if ($canon === '') {
-                                    continue;
-                                }
-                                $map[$canon] = trim((string)($row[$i] ?? ''));
-                            }
-                        }
-                        $rowTargetCcId = 0;
-                        if ($deliveryCsvHasConsigningColumn) {
-                            $rowCcCode = trim((string)($map['consigning_client_code'] ?? ''));
-                            if ($rowCcCode === '') {
-                                $fail++;
-                                if (count($failureLog) < $failureLogMax) {
-                                    $failureLog[] = [
-                                        'line' => $csvRowIndex,
-                                        'reason' => '缺少委托客户编码（表头含该列时，每行均须填写）',
-                                    ];
-                                }
-                                continue;
-                            }
-                            $rowTargetCcId = $this->consigningClientIdByCode($conn, $rowCcCode);
-                            if ($rowTargetCcId <= 0) {
-                                $fail++;
-                                if (count($failureLog) < $failureLogMax) {
-                                    $failureLog[] = [
-                                        'line' => $csvRowIndex,
-                                        'reason' => '委托客户编码「' . $rowCcCode . '」不存在或未启用',
-                                    ];
-                                }
-                                continue;
-                            }
-                            if ($hideConsigningSelectors && $rowTargetCcId !== $boundCcId) {
-                                $boundCode = '';
-                                $br = $this->consigningClientRowById($conn, $boundCcId);
-                                if (is_array($br)) {
-                                    $boundCode = trim((string)($br['client_code'] ?? ''));
-                                }
-                                $fail++;
-                                if (count($failureLog) < $failureLogMax) {
-                                    $failureLog[] = [
-                                        'line' => $csvRowIndex,
-                                        'reason' => $boundCode !== ''
-                                            ? ('当前为委托客户绑定账号，仅可导入「' . $boundCode . '」，与行内「' . $rowCcCode . '」不符')
-                                            : '当前为委托客户绑定账号，仅可导入已绑定的委托客户',
-                                    ];
-                                }
-                                continue;
-                            }
+                        $headerRow = fgetcsv($fh);
+                        if (!is_array($headerRow)) {
+                            fclose($fh);
+                            $error = 'CSV 表头读取失败';
                         } else {
-                            $rowTargetCcId = $ccCsv;
-                        }
-                        $customerCode = (string)($map['customer_code'] ?? '');
-                        if ($customerCode === '' || mb_strlen($customerCode) > 60) {
-                            $fail++;
-                            if (count($failureLog) < $failureLogMax) {
-                                $failureLog[] = [
-                                    'line' => $csvRowIndex,
-                                    'reason' => $customerCode === ''
-                                        ? '缺少派送客户编号（表头须能识别为「派送客户编号」或与模板一致的别名）'
-                                        : '派送客户编号超过 60 字',
-                                ];
-                            }
-                            continue;
-                        }
-                        $wechat = (string)($map['wechat_id'] ?? '');
-                        $line = (string)($map['line_id'] ?? '');
-                        $recipientName = (string)($map['recipient_name'] ?? '');
-                        $phone = (string)($map['phone'] ?? '');
-                        $addrHouseNo = (string)($map['addr_house_no'] ?? '');
-                        $addrRoadSoi = (string)($map['addr_road_soi'] ?? '');
-                        $addrMooVillage = (string)($map['addr_moo_village'] ?? '');
-                        $addrTambon = (string)($map['addr_tambon'] ?? '');
-                        $addrAmphoe = (string)($map['addr_amphoe'] ?? '');
-                        $addrProvince = (string)($map['addr_province'] ?? '');
-                        $addrZipcode = (string)($map['addr_zipcode'] ?? '');
-                        $geoStatusRaw = (string)($map['geo_status'] ?? '');
-                        $geoRaw = (string)($map['geo_position'] ?? '');
-                        $rp = (string)($map['route_primary'] ?? '');
-                        $rs = (string)($map['route_secondary'] ?? '');
-                        $en = (string)($map['community_name_en'] ?? '');
-                        $th = (string)($map['community_name_th'] ?? '');
-                        $customerRequirement = (string)($map['customer_requirements'] ?? '');
-                        if (mb_strlen($wechat) > 120 || mb_strlen($line) > 120 || mb_strlen($recipientName) > 120 || mb_strlen($phone) > 40) {
-                            $fail++;
-                            if (count($failureLog) < $failureLogMax) {
-                                $failureLog[] = ['line' => $csvRowIndex, 'reason' => '微信号/Line/收件人/电话字段长度超限（微信/Line/收件人≤120，电话≤40）'];
-                            }
-                            continue;
-                        }
-                        if (
-                            mb_strlen($addrHouseNo) > 120 || mb_strlen($addrRoadSoi) > 160 || mb_strlen($addrMooVillage) > 160
-                            || mb_strlen($addrTambon) > 160 || mb_strlen($addrAmphoe) > 160 || mb_strlen($addrProvince) > 160
-                            || mb_strlen($addrZipcode) > 20
-                        ) {
-                            $fail++;
-                            if (count($failureLog) < $failureLogMax) {
-                                $failureLog[] = ['line' => $csvRowIndex, 'reason' => '泰国地址结构字段长度超限（门牌≤120，其余地址段≤160，Zipcode≤20）'];
-                            }
-                            continue;
-                        }
-                        if (mb_strlen($geoRaw) > 48) {
-                            $fail++;
-                            if (count($failureLog) < $failureLogMax) {
-                                $failureLog[] = ['line' => $csvRowIndex, 'reason' => '定位字段超过 48 字'];
-                            }
-                            continue;
-                        }
-                        if (mb_strlen($rp) > 120 || mb_strlen($rs) > 120) {
-                            $fail++;
-                            if (count($failureLog) < $failureLogMax) {
-                                $failureLog[] = ['line' => $csvRowIndex, 'reason' => '主路线或副路线超过 120 字'];
-                            }
-                            continue;
-                        }
-                        if (mb_strlen($en) > 160 || mb_strlen($th) > 160) {
-                            $fail++;
-                            if (count($failureLog) < $failureLogMax) {
-                                $failureLog[] = ['line' => $csvRowIndex, 'reason' => '小区英文名或泰文名超过 160 字'];
-                            }
-                            continue;
-                        }
-                        if (mb_strlen($customerRequirement) > 5000) {
-                            $fail++;
-                            if (count($failureLog) < $failureLogMax) {
-                                $failureLog[] = ['line' => $csvRowIndex, 'reason' => '客户要求超过 5000 字'];
-                            }
-                            continue;
-                        }
-                        $geoParsed = $this->parseDeliveryGeoPosition($geoRaw);
-                        if (!$geoParsed['ok']) {
-                            $fail++;
-                            if (count($failureLog) < $failureLogMax) {
-                                $failureLog[] = [
-                                    'line' => $csvRowIndex,
-                                    'reason' => $geoParsed['error'] !== '' ? $geoParsed['error'] : '定位格式无效',
-                                ];
-                            }
-                            continue;
-                        }
-                        $custStateRaw = (string)($map['customer_state'] ?? '');
-                        $res = $this->upsertDeliveryCustomerFromImport(
-                            $conn,
-                            $rowTargetCcId,
-                            $customerCode,
-                            $wechat,
-                            $line,
-                            $recipientName,
-                            $phone,
-                            $addrHouseNo,
-                            $addrRoadSoi,
-                            $addrMooVillage,
-                            $addrTambon,
-                            $addrAmphoe,
-                            $addrProvince,
-                            $addrZipcode,
-                            $geoStatusRaw,
-                            $geoParsed['lat'],
-                            $geoParsed['lng'],
-                            $rp,
-                            $rs,
-                            $en,
-                            $th,
-                            $custStateRaw,
-                            $customerRequirement
-                        );
-                        if ($res['ok']) {
-                            if (($res['action'] ?? '') === 'update') {
-                                $upd++;
+                            $deliveryCsvHasConsigningColumn = $this->deliveryImportHeaderHasConsigningColumn($headerRow);
+                            if (!$deliveryCsvHasConsigningColumn && $ccCsv <= 0) {
+                                fclose($fh);
+                                $error = '导入文件未包含「委托客户编码」列时，请先在上方选择委托客户后再导入；若需一次导入多个委托客户，请使用带「委托客户编码」列的模板。';
                             } else {
-                                $ok++;
-                            }
-                        } else {
-                            $fail++;
-                            if (count($failureLog) < $failureLogMax) {
-                                $err = trim((string)($res['error'] ?? ''));
-                                $failureLog[] = [
-                                    'line' => $csvRowIndex,
-                                    'reason' => $err !== '' ? ('保存失败：' . $err) : '保存失败（未知原因）',
-                                ];
+                                $ok = 0;
+                                $upd = 0;
+                                $fail = 0;
+                                $failureLog = [];
+                                $failureLogMax = 200;
+                                $csvRowIndex = 1;
+                                while (($row = fgetcsv($fh)) !== false) {
+                                    $csvRowIndex++;
+                                    if ($row === [null] || (count($row) === 1 && trim((string)($row[0] ?? '')) === '')) {
+                                        continue;
+                                    }
+                                    $rowList = array_values(array_map(static fn ($v) => trim((string)$v), $row));
+                                    $this->deliveryImportExecuteMapRow(
+                                        $conn,
+                                        $headerRow,
+                                        $rowList,
+                                        $csvRowIndex,
+                                        $deliveryCsvHasConsigningColumn,
+                                        $ccCsv,
+                                        $hideConsigningSelectors,
+                                        $boundCcId,
+                                        $ok,
+                                        $upd,
+                                        $fail,
+                                        $failureLog,
+                                        $failureLogMax
+                                    );
+                                }
+                                fclose($fh);
+                                $importFailureDetails = $failureLog;
+                                $message = "该次派送客户导入完成：新增 {$ok} 条，覆盖更新 {$upd} 条，失败 {$fail} 条";
+                                if ($fail > $failureLogMax) {
+                                    $message .= '（下方仅列出前 ' . (string)$failureLogMax . ' 条失败原因）';
+                                }
+                                if (!$deliveryCsvHasConsigningColumn) {
+                                    $filterCcId = $ccCsv;
+                                }
                             }
                         }
                     }
-                    fclose($fh);
-                    $importFailureDetails = $failureLog;
-                    $message = "该次派送客户导入完成：新增 {$ok} 条，覆盖更新 {$upd} 条，失败 {$fail} 条";
-                    if ($fail > $failureLogMax) {
-                        $message .= '（下方仅列出前 ' . (string)$failureLogMax . ' 条失败原因）';
+                } elseif (in_array($ext, ['xlsx', 'xls'], true)) {
+                    if (!DeliveryCustomerImportSheet::isAvailable()) {
+                        $error = '服务器未加载 PhpSpreadsheet：请在项目根目录执行 composer install，并启用 PHP zip 扩展。';
+                    } else {
+                        $loaded = DeliveryCustomerImportSheet::loadMatrixFromUpload($tmpPath, $origName);
+                        if (!$loaded['ok']) {
+                            $error = $loaded['error'] !== '' ? $loaded['error'] : 'Excel 读取失败';
+                        } else {
+                            /** @var list<string> $headerRow */
+                            $headerRow = $loaded['headers'];
+                            $deliveryCsvHasConsigningColumn = $this->deliveryImportHeaderHasConsigningColumn($headerRow);
+                            if (!$deliveryCsvHasConsigningColumn && $ccCsv <= 0) {
+                                $error = '导入文件未包含「委托客户编码」列时，请先在上方选择委托客户后再导入；若需一次导入多个委托客户，请使用带「委托客户编码」列的模板。';
+                            } else {
+                                $ok = 0;
+                                $upd = 0;
+                                $fail = 0;
+                                $failureLog = [];
+                                $failureLogMax = 200;
+                                $csvRowIndex = 1;
+                                foreach ($loaded['rows'] as $row) {
+                                    $csvRowIndex++;
+                                    $this->deliveryImportExecuteMapRow(
+                                        $conn,
+                                        $headerRow,
+                                        $row,
+                                        $csvRowIndex,
+                                        $deliveryCsvHasConsigningColumn,
+                                        $ccCsv,
+                                        $hideConsigningSelectors,
+                                        $boundCcId,
+                                        $ok,
+                                        $upd,
+                                        $fail,
+                                        $failureLog,
+                                        $failureLogMax
+                                    );
+                                }
+                                $importFailureDetails = $failureLog;
+                                $message = "该次派送客户导入完成：新增 {$ok} 条，覆盖更新 {$upd} 条，失败 {$fail} 条";
+                                if ($fail > $failureLogMax) {
+                                    $message .= '（下方仅列出前 ' . (string)$failureLogMax . ' 条失败原因）';
+                                }
+                                if (!$deliveryCsvHasConsigningColumn) {
+                                    $filterCcId = $ccCsv;
+                                }
+                            }
+                        }
                     }
-                    if (!$deliveryCsvHasConsigningColumn) {
-                        $filterCcId = $ccCsv;
-                    }
-                    }
+                } else {
+                    $error = '不支持的文件类型，请上传 .xlsx、.xls 或 .csv';
                 }
             }
         }
@@ -4571,7 +5597,7 @@ class DispatchController
     public function dispatchThGeoProvinces(): void
     {
         $this->requireDispatchMenu();
-        if (!$this->hasAnyPermission(['dispatch.delivery_customers.view', 'dispatch.manage'])) {
+        if (!$this->hasAnyPermission(['menu.nav.dispatch.delivery_customers', 'dispatch.delivery_customers.view', 'dispatch.manage'])) {
             http_response_code(403);
             header('Content-Type: application/json; charset=utf-8');
             echo json_encode(['ok' => false, 'error' => '无权限'], JSON_UNESCAPED_UNICODE);
@@ -4605,7 +5631,7 @@ class DispatchController
     public function dispatchThGeoDistricts(): void
     {
         $this->requireDispatchMenu();
-        if (!$this->hasAnyPermission(['dispatch.delivery_customers.view', 'dispatch.manage'])) {
+        if (!$this->hasAnyPermission(['menu.nav.dispatch.delivery_customers', 'dispatch.delivery_customers.view', 'dispatch.manage'])) {
             http_response_code(403);
             header('Content-Type: application/json; charset=utf-8');
             echo json_encode(['ok' => false, 'error' => '无权限'], JSON_UNESCAPED_UNICODE);
@@ -4649,7 +5675,7 @@ class DispatchController
     public function dispatchThGeoSubdistricts(): void
     {
         $this->requireDispatchMenu();
-        if (!$this->hasAnyPermission(['dispatch.delivery_customers.view', 'dispatch.manage'])) {
+        if (!$this->hasAnyPermission(['menu.nav.dispatch.delivery_customers', 'dispatch.delivery_customers.view', 'dispatch.manage'])) {
             http_response_code(403);
             header('Content-Type: application/json; charset=utf-8');
             echo json_encode(['ok' => false, 'error' => '无权限'], JSON_UNESCAPED_UNICODE);
@@ -4736,12 +5762,194 @@ class DispatchController
         ];
     }
 
+    /**
+     * 由导入行的 府/县/镇（支持 th/en）+ zipcode 反查泰国地理主数据链。
+     *
+     * @return array{
+     *   province_id:int,
+     *   district_id:int,
+     *   subdistrict_id:int,
+     *   tambon_th:string,
+     *   amphoe_th:string,
+     *   province_th:string,
+     *   zipcode:string
+     * }|null
+     */
+    private function resolveThGeoChainFromAddressNames(
+        mysqli $conn,
+        string $provinceRaw,
+        string $amphoeRaw,
+        string $tambonRaw,
+        string $zipcodeRaw
+    ): ?array {
+        if (
+            !$this->tableExists($conn, 'th_geo_provinces')
+            || !$this->tableExists($conn, 'th_geo_districts')
+            || !$this->tableExists($conn, 'th_geo_subdistricts')
+        ) {
+            return null;
+        }
+        $province = trim($provinceRaw);
+        $amphoe = trim($amphoeRaw);
+        $tambon = trim($tambonRaw);
+        $zipcode = trim($zipcodeRaw);
+        if ($province === '' || $amphoe === '' || $tambon === '') {
+            return null;
+        }
+
+        $sql = '
+            SELECT sd.id AS sub_id, sd.name_th AS tambon_th, sd.name_en AS tambon_en, sd.zipcode AS zipcode,
+                   dd.id AS district_id, dd.name_th AS amphoe_th, dd.name_en AS amphoe_en,
+                   pp.id AS province_id, pp.name_th AS province_th, pp.name_en AS province_en
+            FROM th_geo_subdistricts sd
+            INNER JOIN th_geo_districts dd ON dd.id = sd.district_id
+            INNER JOIN th_geo_provinces pp ON pp.id = dd.province_id
+            WHERE (? = \'\' OR TRIM(COALESCE(sd.zipcode, \'\')) = ?)
+            LIMIT 2000
+        ';
+        $stmt = $conn->prepare($sql);
+        if (!$stmt) {
+            return null;
+        }
+        $stmt->bind_param('ss', $zipcode, $zipcode);
+        $stmt->execute();
+        $res = $stmt->get_result();
+        $stmt->close();
+
+        $wantP = $this->normalizeThGeoNameKey($province);
+        $wantA = $this->normalizeThGeoNameKey($amphoe);
+        $wantT = $this->normalizeThGeoNameKey($tambon);
+
+        $fallback = null;
+        while ($res && ($row = $res->fetch_assoc())) {
+            $candPth = $this->normalizeThGeoNameKey((string)($row['province_th'] ?? ''));
+            $candPen = $this->normalizeThGeoNameKey((string)($row['province_en'] ?? ''));
+            $candAth = $this->normalizeThGeoNameKey((string)($row['amphoe_th'] ?? ''));
+            $candAen = $this->normalizeThGeoNameKey((string)($row['amphoe_en'] ?? ''));
+            $candTth = $this->normalizeThGeoNameKey((string)($row['tambon_th'] ?? ''));
+            $candTen = $this->normalizeThGeoNameKey((string)($row['tambon_en'] ?? ''));
+
+            $pOk = $wantP !== '' && ($wantP === $candPth || $wantP === $candPen);
+            $aOk = $wantA !== '' && ($wantA === $candAth || $wantA === $candAen);
+            $tOk = $wantT !== '' && ($wantT === $candTth || $wantT === $candTen);
+
+            if ($pOk && $aOk && $tOk) {
+                return [
+                    'province_id' => (int)($row['province_id'] ?? 0),
+                    'district_id' => (int)($row['district_id'] ?? 0),
+                    'subdistrict_id' => (int)($row['sub_id'] ?? 0),
+                    'tambon_th' => (string)($row['tambon_th'] ?? ''),
+                    'amphoe_th' => (string)($row['amphoe_th'] ?? ''),
+                    'province_th' => (string)($row['province_th'] ?? ''),
+                    'zipcode' => (string)($row['zipcode'] ?? ''),
+                ];
+            }
+            // 退一步：在给了 zipcode 的情况下，县/镇可精确命中就先记一个候选。
+            if ($fallback === null && $zipcode !== '' && $aOk && $tOk) {
+                $fallback = [
+                    'province_id' => (int)($row['province_id'] ?? 0),
+                    'district_id' => (int)($row['district_id'] ?? 0),
+                    'subdistrict_id' => (int)($row['sub_id'] ?? 0),
+                    'tambon_th' => (string)($row['tambon_th'] ?? ''),
+                    'amphoe_th' => (string)($row['amphoe_th'] ?? ''),
+                    'province_th' => (string)($row['province_th'] ?? ''),
+                    'zipcode' => (string)($row['zipcode'] ?? ''),
+                ];
+            }
+        }
+        if (is_array($fallback)) {
+            return $fallback;
+        }
+
+        return null;
+    }
+
+    private function normalizeThGeoNameKey(string $raw): string
+    {
+        $s = mb_strtolower(trim($raw), 'UTF-8');
+        if ($s === '') {
+            return '';
+        }
+        $drop = [
+            'จังหวัด', 'อำเภอ', 'เขต', 'ตำบล', 'แขวง',
+            'changwat', 'province', 'amphoe', 'district', 'khet', 'tambon', 'subdistrict',
+        ];
+        foreach ($drop as $w) {
+            $s = str_replace($w, '', $s);
+        }
+        $s = preg_replace('/[\s\-\._\/\(\)\[\],]+/u', '', $s);
+
+        return trim((string)$s);
+    }
+
+    /**
+     * 导入后按 府/县/镇 回填 th_geo_* 外键，供编辑弹窗自动选中。
+     */
+    private function syncDeliveryCustomerThGeoFromImportRow(
+        mysqli $conn,
+        int $deliveryId,
+        int $ccId,
+        string $addrHouseNo,
+        string $addrRoadSoi,
+        string $addrMooVillage,
+        string $addrProvince,
+        string $addrAmphoe,
+        string $addrTambon,
+        string $addrZipcode
+    ): void {
+        if (
+            $deliveryId <= 0
+            || !$this->columnExists($conn, 'dispatch_delivery_customers', 'th_geo_subdistrict_id')
+            || !$this->columnExists($conn, 'dispatch_delivery_customers', 'th_geo_district_id')
+            || !$this->columnExists($conn, 'dispatch_delivery_customers', 'th_geo_province_id')
+        ) {
+            return;
+        }
+        $chain = $this->resolveThGeoChainFromAddressNames($conn, $addrProvince, $addrAmphoe, $addrTambon, $addrZipcode);
+        if (!is_array($chain)) {
+            return;
+        }
+        $up = $conn->prepare('
+            UPDATE dispatch_delivery_customers
+            SET th_geo_province_id = ?, th_geo_district_id = ?, th_geo_subdistrict_id = ?,
+                addr_th_full = ?
+            WHERE id = ? AND consigning_client_id = ?
+            LIMIT 1
+        ');
+        if (!$up) {
+            return;
+        }
+        $comp = $this->deliveryComposedFullAddresses(
+            $addrHouseNo,
+            $addrRoadSoi,
+            $addrMooVillage,
+            (string)$chain['tambon_th'],
+            (string)$chain['amphoe_th'],
+            (string)$chain['province_th'],
+            $addrZipcode
+        );
+        $fullTh = (string)($comp['th'] ?? '');
+        $up->bind_param(
+            'iiisii',
+            $chain['province_id'],
+            $chain['district_id'],
+            $chain['subdistrict_id'],
+            $fullTh,
+            $deliveryId,
+            $ccId
+        );
+        $up->execute();
+        $up->close();
+    }
+
     /** @return list<array<string,mixed>> */
     private function dispatchInboundCustomerRows(mysqli $conn): array
     {
         $rows = [];
         $hasCustomerState = $this->columnExists($conn, 'dispatch_delivery_customers', 'customer_state');
         $stateFilter = $hasCustomerState ? "AND COALESCE(dc.customer_state, '正常') = '正常'" : '';
+        // 主线路 OT / UDA 不参与分配派送单（生成初步派送单）列表
+        $excludeOtUdaPrimary = "AND UPPER(TRIM(COALESCE(dc.route_primary, ''))) NOT IN ('OT', 'UDA')";
         $hasAddrTh = $this->columnExists($conn, 'dispatch_delivery_customers', 'addr_th_full');
         $hasAddrEn = $this->columnExists($conn, 'dispatch_delivery_customers', 'addr_en_full');
         $selTh = $hasAddrTh ? 'dc.addr_th_full' : "'' AS addr_th_full";
@@ -4765,11 +5973,18 @@ class DispatchController
                 dc.route_secondary,
                 dc.latitude,
                 dc.longitude,
-                COUNT(w.id) AS inbound_count
+                SUM(
+                    CASE
+                        WHEN w.id IS NULL THEN 0
+                        WHEN COALESCE(w.quantity, 0) > 0 THEN w.quantity
+                        ELSE 1
+                    END
+                ) AS inbound_count
             FROM dispatch_delivery_customers dc
             LEFT JOIN dispatch_waybills w
                 ON w.consigning_client_id = dc.consigning_client_id
                AND COALESCE(w.order_status, '') = '已入库'
+               AND TRIM(COALESCE(w.delivery_doc_no, '')) = ''
                AND (
                     w.delivery_customer_id = dc.id
                     OR (
@@ -4779,6 +5994,7 @@ class DispatchController
                )
             WHERE dc.status = 1
               {$stateFilter}
+              {$excludeOtUdaPrimary}
             GROUP BY
                 dc.id,
                 dc.consigning_client_id,
@@ -4790,7 +6006,222 @@ class DispatchController
                 dc.route_secondary,
                 dc.latitude,
                 dc.longitude
-            HAVING COUNT(w.id) > 0
+            HAVING SUM(
+                CASE
+                    WHEN w.id IS NULL THEN 0
+                    WHEN COALESCE(w.quantity, 0) > 0 THEN w.quantity
+                    ELSE 1
+                END
+            ) > 0
+            ORDER BY dc.route_primary ASC, dc.route_secondary ASC, dc.customer_code ASC
+        ";
+        $res = $conn->query($sql);
+        if ($res instanceof mysqli_result) {
+            while ($row = $res->fetch_assoc()) {
+                $rows[] = $row;
+            }
+            $res->free();
+        }
+        return $rows;
+    }
+
+    /** 可派送列表「重货」：重量 > 20kg，或长/宽/高中至少两项 > 70cm */
+    private function waybillMeetsHeavyCargoDeliveryListRule(float $weightKg, float $lengthCm, float $widthCm, float $heightCm): bool
+    {
+        if ($weightKg > 20.0) {
+            return true;
+        }
+        $n = 0;
+        if ($lengthCm > 70.0) {
+            $n++;
+        }
+        if ($widthCm > 70.0) {
+            $n++;
+        }
+        if ($heightCm > 70.0) {
+            $n++;
+        }
+
+        return $n >= 2;
+    }
+
+    /**
+     * 可派送列表：按派送客户 id 拉取当前「已入库、未绑派送单号」运单，并标记是否需显示重货 H、弹窗用全量行。
+     *
+     * @param list<int> $deliveryCustomerIds
+     *
+     * @return array<int, array{heavy: bool, lines: list<array{original_tracking_no: string, quantity: float|int|string, weight_kg: float, length_cm: float, width_cm: float, height_cm: float}>}>
+     */
+    private function dispatchInboundHeavyCargoPayloadByDeliveryCustomerIds(mysqli $conn, array $deliveryCustomerIds): array
+    {
+        $out = [];
+        $deliveryCustomerIds = array_values(array_unique(array_filter(array_map(static fn ($v) => (int)$v, $deliveryCustomerIds), static fn ($v) => $v > 0)));
+        if ($deliveryCustomerIds === []) {
+            return $out;
+        }
+        $hasL = $this->columnExists($conn, 'dispatch_waybills', 'length_cm');
+        $hasW = $this->columnExists($conn, 'dispatch_waybills', 'width_cm');
+        $hasH = $this->columnExists($conn, 'dispatch_waybills', 'height_cm');
+        $selL = $hasL ? 'COALESCE(w.length_cm, 0)' : '0';
+        $selWi = $hasW ? 'COALESCE(w.width_cm, 0)' : '0';
+        $selH = $hasH ? 'COALESCE(w.height_cm, 0)' : '0';
+        $placeholders = implode(',', array_fill(0, count($deliveryCustomerIds), '?'));
+        $types = str_repeat('i', count($deliveryCustomerIds));
+        $sql = "
+            SELECT
+                dc.id AS delivery_customer_id,
+                w.original_tracking_no,
+                w.quantity,
+                w.weight_kg,
+                {$selL} AS length_cm,
+                {$selWi} AS width_cm,
+                {$selH} AS height_cm
+            FROM dispatch_delivery_customers dc
+            INNER JOIN dispatch_waybills w
+                ON w.consigning_client_id = dc.consigning_client_id
+               AND COALESCE(w.order_status, '') = '已入库'
+               AND TRIM(COALESCE(w.delivery_doc_no, '')) = ''
+               AND (
+                    w.delivery_customer_id = dc.id
+                    OR (
+                        w.delivery_customer_id IS NULL
+                        AND TRIM(COALESCE(w.delivery_customer_code, '')) = TRIM(dc.customer_code)
+                    )
+               )
+            WHERE dc.id IN ({$placeholders})
+            ORDER BY dc.id ASC, w.id ASC
+        ";
+        $st = $conn->prepare($sql);
+        if (!$st) {
+            return $out;
+        }
+        $st->bind_param($types, ...$deliveryCustomerIds);
+        $st->execute();
+        $res = $st->get_result();
+        while ($res && ($m = $res->fetch_assoc())) {
+            $dcid = (int)($m['delivery_customer_id'] ?? 0);
+            if ($dcid <= 0) {
+                continue;
+            }
+            if (!isset($out[$dcid])) {
+                $out[$dcid] = ['heavy' => false, 'lines' => []];
+            }
+            $wk = (float)($m['weight_kg'] ?? 0);
+            $l = (float)($m['length_cm'] ?? 0);
+            $wi = (float)($m['width_cm'] ?? 0);
+            $h = (float)($m['height_cm'] ?? 0);
+            if ($this->waybillMeetsHeavyCargoDeliveryListRule($wk, $l, $wi, $h)) {
+                $out[$dcid]['heavy'] = true;
+            }
+            $out[$dcid]['lines'][] = [
+                'original_tracking_no' => (string)($m['original_tracking_no'] ?? ''),
+                'quantity' => $m['quantity'] ?? 0,
+                'weight_kg' => $wk,
+                'length_cm' => $l,
+                'width_cm' => $wi,
+                'height_cm' => $h,
+            ];
+        }
+        $st->close();
+
+        return $out;
+    }
+
+    /**
+     * @param list<array<string,mixed>> $rows
+     *
+     * @return list<array<string,mixed>>
+     */
+    private function attachHeavyCargoHintsToInboundDeliveryListRows(mysqli $conn, array $rows): array
+    {
+        if ($rows === []) {
+            return $rows;
+        }
+        $ids = [];
+        foreach ($rows as $r) {
+            $ids[] = (int)($r['id'] ?? 0);
+        }
+        $payload = $this->dispatchInboundHeavyCargoPayloadByDeliveryCustomerIds($conn, $ids);
+        foreach ($rows as $i => $r) {
+            $dcid = (int)($r['id'] ?? 0);
+            $pack = $payload[$dcid] ?? ['heavy' => false, 'lines' => []];
+            $rows[$i]['heavy_cargo_hint'] = !empty($pack['heavy']);
+            $rows[$i]['heavy_cargo_popup_orders'] = $pack['lines'];
+        }
+
+        return $rows;
+    }
+
+    /**
+     * 绑带列表专用：订单状态为「已入库 / 待转发 / 待自取」且 binding_completed_at 为空；不按派送客户业务状态过滤。
+     * 到件扫描等将运单写入上述三态时会清除 binding_completed_at，以便「完成」后再次扫描可重新进列表。
+     *
+     * @return list<array<string,mixed>>
+     */
+    private function dispatchBindingListCustomerRows(mysqli $conn): array
+    {
+        $rows = [];
+        $hasAddrTh = $this->columnExists($conn, 'dispatch_delivery_customers', 'addr_th_full');
+        $hasAddrEn = $this->columnExists($conn, 'dispatch_delivery_customers', 'addr_en_full');
+        $selTh = $hasAddrTh ? 'dc.addr_th_full' : "'' AS addr_th_full";
+        $selEn = $hasAddrEn ? 'dc.addr_en_full' : "'' AS addr_en_full";
+        $grpExtra = array_values(array_filter([
+            $hasAddrTh ? 'dc.addr_th_full' : '',
+            $hasAddrEn ? 'dc.addr_en_full' : '',
+        ]));
+        $grpTail = $grpExtra !== [] ? ",\n                " . implode(",\n                ", $grpExtra) : '';
+        $sql = "
+            SELECT
+                dc.id,
+                dc.consigning_client_id,
+                dc.customer_code,
+                dc.wechat_id,
+                dc.line_id,
+                dc.community_name_th,
+                {$selTh},
+                {$selEn},
+                dc.route_primary,
+                dc.route_secondary,
+                dc.latitude,
+                dc.longitude,
+                SUM(
+                    CASE
+                        WHEN w.id IS NULL THEN 0
+                        WHEN COALESCE(w.quantity, 0) > 0 THEN w.quantity
+                        ELSE 1
+                    END
+                ) AS inbound_count
+            FROM dispatch_delivery_customers dc
+            LEFT JOIN dispatch_waybills w
+                ON w.consigning_client_id = dc.consigning_client_id
+               AND COALESCE(w.order_status, '') IN ('已入库', '待转发', '待自取')
+               AND w.binding_completed_at IS NULL
+               AND (
+                    w.delivery_customer_id = dc.id
+                    OR (
+                        w.delivery_customer_id IS NULL
+                        AND TRIM(COALESCE(w.delivery_customer_code, '')) = TRIM(dc.customer_code)
+                    )
+               )
+            WHERE dc.status = 1
+            GROUP BY
+                dc.id,
+                dc.consigning_client_id,
+                dc.customer_code,
+                dc.wechat_id,
+                dc.line_id,
+                dc.community_name_th{$grpTail},
+                dc.route_primary,
+                dc.route_secondary,
+                dc.latitude,
+                dc.longitude
+            HAVING SUM(
+                CASE
+                    WHEN w.id IS NULL THEN 0
+                    WHEN COALESCE(w.quantity, 0) > 0 THEN w.quantity
+                    ELSE 1
+                END
+            ) > 0
             ORDER BY dc.route_primary ASC, dc.route_secondary ASC, dc.customer_code ASC
         ";
         $res = $conn->query($sql);
@@ -4805,7 +6236,7 @@ class DispatchController
 
     public function opsDeliveryList(): void
     {
-        if (!$this->hasAnyPermission(['menu.dispatch', 'menu.dashboard'])) {
+        if (!$this->hasAnyPermission(['menu.nav.dispatch.ops.delivery_list', 'menu.dispatch', 'menu.dashboard'])) {
             $this->denyNoPermission('无权限访问派送列表');
         }
         $conn = require __DIR__ . '/../../config/database.php';
@@ -4816,6 +6247,7 @@ class DispatchController
             $this->ensureDispatchSchema($conn);
             $this->ensureDispatchOrderV2($conn);
             $rows = $this->dispatchInboundCustomerRows($conn);
+            $rows = $this->attachHeavyCargoHintsToInboundDeliveryListRows($conn, $rows);
         } catch (Throwable $e) {
             $schemaReady = false;
             $error = $e->getMessage();
@@ -4828,7 +6260,7 @@ class DispatchController
 
     public function opsBindingList(): void
     {
-        if (!$this->hasAnyPermission(['menu.dispatch', 'menu.dashboard'])) {
+        if (!$this->hasAnyPermission(['menu.nav.dispatch.ops.binding_list', 'menu.dispatch', 'menu.dashboard'])) {
             $this->denyNoPermission('无权限访问绑带列表');
         }
         $conn = require __DIR__ . '/../../config/database.php';
@@ -4863,32 +6295,60 @@ class DispatchController
                     } else {
                         $ccId = (int)($customer['consigning_client_id'] ?? 0);
                         $code = trim((string)($customer['customer_code'] ?? ''));
-                        $toStatus = '已出库';
-                        $fromStatus = '已入库';
-                        $up = $conn->prepare("
-                            UPDATE dispatch_waybills
-                            SET order_status = ?, delivered_at = NOW()
+                        $sumSt = $conn->prepare("
+                            SELECT COALESCE(SUM(
+                                CASE
+                                    WHEN COALESCE(quantity, 0) > 0 THEN quantity
+                                    ELSE 1
+                                END
+                            ), 0) AS qty_total
+                            FROM dispatch_waybills
                             WHERE consigning_client_id = ?
-                              AND COALESCE(order_status, '') = ?
+                              AND COALESCE(order_status, '') IN ('已入库', '待转发', '待自取')
+                              AND binding_completed_at IS NULL
                               AND (
                                   delivery_customer_id = ?
                                   OR (delivery_customer_id IS NULL AND TRIM(COALESCE(delivery_customer_code, '')) = ?)
                               )
                         ");
-                        if ($up) {
-                            $up->bind_param('sisis', $toStatus, $ccId, $fromStatus, $deliveryId, $code);
-                            $up->execute();
-                            $affected = (int)$up->affected_rows;
-                            $up->close();
-                            $message = $affected > 0 ? ('已完成，更新 ' . $affected . ' 件') : '该客户当前无可完成的已入库货件';
-                        } else {
+                        if (!$sumSt) {
                             $error = '操作失败';
+                        } else {
+                            $sumSt->bind_param('iis', $ccId, $deliveryId, $code);
+                            $sumSt->execute();
+                            $sumRow = $sumSt->get_result()->fetch_assoc() ?: [];
+                            $sumSt->close();
+                            $pieceTotal = (int)round((float)($sumRow['qty_total'] ?? 0));
+
+                            $up = $conn->prepare("
+                                UPDATE dispatch_waybills
+                                SET binding_completed_at = NOW(), delivered_at = NOW()
+                                WHERE consigning_client_id = ?
+                                  AND COALESCE(order_status, '') IN ('已入库', '待转发', '待自取')
+                                  AND binding_completed_at IS NULL
+                                  AND (
+                                      delivery_customer_id = ?
+                                      OR (delivery_customer_id IS NULL AND TRIM(COALESCE(delivery_customer_code, '')) = ?)
+                                  )
+                            ");
+                            if (!$up) {
+                                $error = '操作失败';
+                            } elseif ($pieceTotal <= 0) {
+                                $message = '该客户当前无可绑带完成的货件（已入库/待转发/待自取且未标记完成）';
+                                $up->close();
+                            } else {
+                                $up->bind_param('iis', $ccId, $deliveryId, $code);
+                                $up->execute();
+                                $affected = (int)$up->affected_rows;
+                                $up->close();
+                                $message = $affected > 0 ? ('已完成，数量汇总 ' . $pieceTotal . ' 件') : '该客户当前无可绑带完成的货件';
+                            }
                         }
                     }
                 }
             }
 
-            $rows = $this->dispatchInboundCustomerRows($conn);
+            $rows = $this->dispatchBindingListCustomerRows($conn);
         } catch (Throwable $e) {
             $schemaReady = false;
             $error = $e->getMessage();
@@ -4901,8 +6361,8 @@ class DispatchController
 
     public function opsCreateDelivery(): void
     {
-        if (!$this->hasAnyPermission(['menu.dispatch', 'menu.dashboard'])) {
-            $this->denyNoPermission('无权限访问生成派送单');
+        if (!$this->hasAnyPermission(['menu.nav.dispatch.ops.create_delivery', 'menu.dispatch', 'menu.dashboard'])) {
+            $this->denyNoPermission('无权限访问分配派送单');
         }
         $conn = require __DIR__ . '/../../config/database.php';
         $schemaReady = true;
@@ -4950,71 +6410,149 @@ class DispatchController
                             $error = '请先勾选要绑定派送单号的客户';
                         } else {
                             $totalAffected = 0;
-                            $toStatus = '已出库';
+                            // 仅绑定派送单号与日期/线路，保持「已入库」；出库仅在「派送单拣货表」点出库后生效（pick_mark_outbound）。
+                            $toStatus = '已入库';
                             $fromStatus = '已入库';
+                            $blockedOtUdaCreate = false;
                             foreach ($selectedIds as $deliveryId) {
-                                $st = $conn->prepare('
-                                    SELECT id, consigning_client_id, customer_code
+                                $chk = $conn->prepare('
+                                    SELECT UPPER(TRIM(COALESCE(route_primary, \'\'))) AS rp
                                     FROM dispatch_delivery_customers
                                     WHERE id = ? AND status = 1
                                     LIMIT 1
                                 ');
-                                $customer = null;
-                                if ($st) {
-                                    $st->bind_param('i', $deliveryId);
-                                    $st->execute();
-                                    $customer = $st->get_result()->fetch_assoc() ?: null;
-                                    $st->close();
-                                }
-                                if (!$customer) {
-                                    continue;
-                                }
-                                $ccId = (int)($customer['consigning_client_id'] ?? 0);
-                                $code = trim((string)($customer['customer_code'] ?? ''));
-                                $up = $conn->prepare("
-                                    UPDATE dispatch_waybills
-                                    SET order_status = ?, delivery_doc_no = ?, dispatch_line = ?, planned_delivery_date = ?, delivered_at = NOW()
-                                    WHERE consigning_client_id = ?
-                                      AND COALESCE(order_status, '') = ?
-                                      AND (
-                                          delivery_customer_id = ?
-                                          OR (delivery_customer_id IS NULL AND TRIM(COALESCE(delivery_customer_code, '')) = ?)
-                                      )
-                                ");
-                                if ($up) {
-                                    $up->bind_param('ssssisis', $toStatus, $docNo, $line, $dateRaw, $ccId, $fromStatus, $deliveryId, $code);
-                                    $up->execute();
-                                    $totalAffected += (int)$up->affected_rows;
-                                    $up->close();
+                                if ($chk) {
+                                    $chk->bind_param('i', $deliveryId);
+                                    $chk->execute();
+                                    $cr = $chk->get_result()->fetch_assoc();
+                                    $chk->close();
+                                    $rp = strtoupper(trim((string)($cr['rp'] ?? '')));
+                                    if ($rp === 'OT' || $rp === 'UDA') {
+                                        $error = '主线路为 OT 或 UDA 的客户不能生成初步派送单';
+                                        $blockedOtUdaCreate = true;
+                                        break;
+                                    }
                                 }
                             }
-                            $generatedDocNo = $docNo;
-                            $selectedLine = $line;
-                            $selectedDate = $dateRaw;
-                            $this->initializeDeliveryDocStops($conn, $docNo);
-                            $message = '派送单已生成：' . $docNo . '；绑定货件 ' . $totalAffected . ' 件';
+                            if (!$blockedOtUdaCreate) {
+                                foreach ($selectedIds as $deliveryId) {
+                                    $st = $conn->prepare('
+                                        SELECT id, consigning_client_id, customer_code
+                                        FROM dispatch_delivery_customers
+                                        WHERE id = ? AND status = 1
+                                        LIMIT 1
+                                    ');
+                                    $customer = null;
+                                    if ($st) {
+                                        $st->bind_param('i', $deliveryId);
+                                        $st->execute();
+                                        $customer = $st->get_result()->fetch_assoc() ?: null;
+                                        $st->close();
+                                    }
+                                    if (!$customer) {
+                                        continue;
+                                    }
+                                    $ccId = (int)($customer['consigning_client_id'] ?? 0);
+                                    $code = trim((string)($customer['customer_code'] ?? ''));
+                                    $up = $conn->prepare("
+                                        UPDATE dispatch_waybills
+                                        SET order_status = ?, delivery_doc_no = ?, dispatch_line = ?, planned_delivery_date = ?
+                                        WHERE consigning_client_id = ?
+                                          AND COALESCE(order_status, '') = ?
+                                          AND (
+                                              delivery_customer_id = ?
+                                              OR (delivery_customer_id IS NULL AND TRIM(COALESCE(delivery_customer_code, '')) = ?)
+                                          )
+                                    ");
+                                    if ($up) {
+                                        $up->bind_param('ssssisis', $toStatus, $docNo, $line, $dateRaw, $ccId, $fromStatus, $deliveryId, $code);
+                                        $up->execute();
+                                        $totalAffected += (int)$up->affected_rows;
+                                        $up->close();
+                                    }
+                                }
+                                $generatedDocNo = $docNo;
+                                $selectedLine = $line;
+                                $selectedDate = $dateRaw;
+                                $this->initializeDeliveryDocStops($conn, $docNo);
+                                header(
+                                    'Location: /dispatch/ops/delivery-docs?' . http_build_query([
+                                        'created_doc' => $docNo,
+                                        'bound' => $totalAffected,
+                                    ], '', '&', PHP_QUERY_RFC3986),
+                                    true,
+                                    303
+                                );
+                                exit;
+                            }
                         }
                     }
                 }
             }
 
             $rows = $this->dispatchInboundCustomerRows($conn);
+            $rows = $this->attachHeavyCargoHintsToInboundDeliveryListRows($conn, $rows);
         } catch (Throwable $e) {
             $schemaReady = false;
             $error = $e->getMessage();
         }
 
-        $title = '派送业务 / 派送操作 / 生成派送单';
+        $title = '派送业务 / 派送操作 / 分配派送单';
         $contentView = __DIR__ . '/../Views/dispatch/ops_create_delivery.php';
         require __DIR__ . '/../Views/layouts/main.php';
     }
 
     public function opsDeliveryDocs(): void
     {
-        if (!$this->hasAnyPermission(['menu.dispatch', 'menu.dashboard'])) {
-            $this->denyNoPermission('无权限访问派送单列表');
+        if (!$this->hasAnyPermission(['menu.nav.dispatch.ops.preliminary_docs', 'menu.dispatch', 'menu.dashboard'])) {
+            $this->denyNoPermission('无权限访问初步派送单列表');
         }
         $conn = require __DIR__ . '/../../config/database.php';
+
+        if (isset($_GET['assign_pool_json']) && (string)$_GET['assign_pool_json'] === '1') {
+            header('Content-Type: application/json; charset=utf-8');
+            try {
+                $this->ensureDispatchSchema($conn);
+                $this->ensureDispatchOrderV2($conn);
+                if (
+                    !$this->columnExists($conn, 'dispatch_waybills', 'delivery_doc_no')
+                    || !$this->columnExists($conn, 'dispatch_waybills', 'dispatch_line')
+                    || !$this->columnExists($conn, 'dispatch_waybills', 'planned_delivery_date')
+                ) {
+                    throw new RuntimeException('派送单字段未建立');
+                }
+                $pool = $this->dispatchInboundCustomerRows($conn);
+                echo json_encode(['ok' => true, 'rows' => $pool], JSON_UNESCAPED_UNICODE);
+            } catch (Throwable $e) {
+                echo json_encode(['ok' => false, 'error' => $e->getMessage()], JSON_UNESCAPED_UNICODE);
+            }
+            exit;
+        }
+        if (isset($_GET['doc_customers_json']) && (string)$_GET['doc_customers_json'] === '1') {
+            header('Content-Type: application/json; charset=utf-8');
+            $doc = trim((string)($_GET['delivery_doc_no'] ?? ''));
+            if ($doc === '') {
+                echo json_encode(['ok' => false, 'error' => '缺少派送单号'], JSON_UNESCAPED_UNICODE);
+                exit;
+            }
+            try {
+                $this->ensureDispatchSchema($conn);
+                $this->ensureDispatchOrderV2($conn);
+                if (!$this->columnExists($conn, 'dispatch_waybills', 'delivery_doc_no')) {
+                    throw new RuntimeException('派送单字段未建立');
+                }
+                if (!$this->deliveryDocNotYetFormal($conn, $doc)) {
+                    throw new RuntimeException('该单已进入正式派送单，无法在此编辑客户');
+                }
+                $list = $this->deliveryDocCustomersWithGeo($conn, $doc);
+                $bindRows = $this->preliminaryDocBindCustomerRows($conn, $doc);
+                echo json_encode(['ok' => true, 'delivery_doc_no' => $doc, 'rows' => $list, 'bind_rows' => $bindRows], JSON_UNESCAPED_UNICODE);
+            } catch (Throwable $e) {
+                echo json_encode(['ok' => false, 'error' => $e->getMessage()], JSON_UNESCAPED_UNICODE);
+            }
+            exit;
+        }
+
         $schemaReady = true;
         $error = '';
         $message = '';
@@ -5028,6 +6566,34 @@ class DispatchController
         $stopsFinalState = 0;
         $hasStopsTable = false;
 
+        $flashCreatedDoc = trim((string)($_GET['created_doc'] ?? ''));
+        $flashBoundPieces = (int)($_GET['bound'] ?? 0);
+        if ($flashCreatedDoc !== '' && preg_match('/^\d{8}-[A-E]$/', $flashCreatedDoc)) {
+            $message = t('dispatch.flash.doc_created_prefix', '派送单已生成：') . $flashCreatedDoc;
+            if ($flashBoundPieces > 0) {
+                $message .= sprintf(t('dispatch.flash.doc_created_bound', '；绑定货件 %d 件'), $flashBoundPieces);
+            }
+            $message .= t('dispatch.flash.doc_created_suffix', '。本单在下方「初步派送单列表」中；请先点「调整」保存增删，再点「转入正式派送单列表」进入正式流程（分段、拣货、指派司机）。');
+            $viewDocNo = $flashCreatedDoc;
+            $qDocNo = $flashCreatedDoc;
+        }
+
+        $flashAdjustedDoc = trim((string)($_GET['adjusted_doc'] ?? ''));
+        if ($flashAdjustedDoc !== '' && preg_match('/^\d{8}-[A-E]$/', $flashAdjustedDoc)) {
+            if ((string)($_GET['adjust_noop'] ?? '') === '1') {
+                $message = '未勾选任何要移除或追加的客户。如需继续修改请点「调整」；确认无误后请点「转入正式派送单列表」。';
+            } else {
+                $message = sprintf(t('dispatch.flash.saved_adjust', '已保存对本单（%s）的客户调整。可再次点「调整」继续修改，确认无误后请点「转入正式派送单列表」。'), $flashAdjustedDoc);
+            }
+            $qDocNo = $flashAdjustedDoc;
+        }
+
+        $flashRevertedDoc = trim((string)($_GET['reverted_doc'] ?? ''));
+        if ($flashRevertedDoc !== '' && preg_match('/^\d{8}-[A-E]$/', $flashRevertedDoc)) {
+            $message = sprintf(t('dispatch.flash.reverted_to_prelim', '已将派送单 %s 从正式流程退回至本「初步派送单列表」。可点「调整」修改后，再点「转入正式派送单列表」。'), $flashRevertedDoc);
+            $qDocNo = $flashRevertedDoc;
+        }
+
         try {
             $this->ensureDispatchSchema($conn);
             $this->ensureDispatchOrderV2($conn);
@@ -5038,38 +6604,213 @@ class DispatchController
             ) {
                 throw new RuntimeException('派送单字段未建立，请先执行 migration：041_dispatch_waybill_delivery_doc_fields.sql');
             }
+            $this->ensureDispatchDeliveryDocWorkflowTables($conn);
             $hasStopsTable = $this->tableExists($conn, 'dispatch_delivery_doc_stops');
 
             if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                 $action = trim((string)($_POST['action'] ?? ''));
                 $docPost = trim((string)($_POST['delivery_doc_no'] ?? ''));
                 if ($docPost !== '') {
-                    if ($action === 'optimize_delivery_doc_stops') {
+                    if ($action === 'create_driver_run_tokens' || $action === 'step3_generate_segment_nav') {
                         try {
-                            $changed = $this->optimizeDeliveryDocStopsDraft($conn, $docPost);
-                            $message = $changed > 0 ? ('优化完成，已更新排序（共 ' . $changed . ' 站）。') : '优化完成，当前顺序无需调整。';
-                            $viewDocNo = $docPost;
+                            // 初步→正式：发布停靠与工作流时间戳（不生成司机 token）；成功后进入正式列表
+                            $this->preliminaryTransitionDocToFormal($conn, $docPost, $hasStopsTable);
+                            header(
+                                'Location: /dispatch/ops/formal-delivery-docs?' . http_build_query([
+                                    'opened_formal_doc' => $docPost,
+                                ], '', '&', PHP_QUERY_RFC3986),
+                                true,
+                                303
+                            );
+                            exit;
                         } catch (Throwable $e) {
                             $error = $e->getMessage();
                             $viewDocNo = $docPost;
                         }
-                    } elseif ($action === 'finalize_delivery_doc_stops') {
-                        try {
-                            $this->publishDeliveryDocStopsFinal($conn, $docPost);
-                            $message = '已发布为最终派送单，司机端将使用当前优化顺序。';
-                            $viewDocNo = $docPost;
-                        } catch (Throwable $e) {
-                            $error = $e->getMessage();
-                            $viewDocNo = $docPost;
+                    } elseif ($action === 'preliminary_adjust_save' || $action === 'preliminary_adjust_confirm_formal') {
+                        if (!$this->deliveryDocNotYetFormal($conn, $docPost)) {
+                            $error = '该单已不是初步派送单，无法保存调整';
+                        } else {
+                            $rawRem = $_POST['remove_delivery_customer_ids'] ?? [];
+                            $rawAdd = $_POST['add_delivery_customer_ids'] ?? [];
+                            $removeIds = [];
+                            if (is_array($rawRem)) {
+                                foreach ($rawRem as $v) {
+                                    $i = (int)$v;
+                                    if ($i > 0) {
+                                        $removeIds[$i] = $i;
+                                    }
+                                }
+                            }
+                            $removeIds = array_values($removeIds);
+                            $addIds = [];
+                            if (is_array($rawAdd)) {
+                                foreach ($rawAdd as $v) {
+                                    $i = (int)$v;
+                                    if ($i > 0) {
+                                        $addIds[$i] = $i;
+                                    }
+                                }
+                            }
+                            $addIds = array_values($addIds);
+                            if ($removeIds !== []) {
+                                $this->unbindWaybillsFromDeliveryDoc($conn, $docPost, $removeIds);
+                                if ($hasStopsTable) {
+                                    $this->initializeDeliveryDocStops($conn, $docPost);
+                                }
+                            }
+                            if ($addIds !== []) {
+                                $bindRes = $this->preliminaryBindPoolCustomerIdsToDoc($conn, $docPost, $addIds, $hasStopsTable);
+                                if ($bindRes['error'] !== '') {
+                                    $error = $bindRes['error'];
+                                }
+                            }
+                            if ($error === '' && ($removeIds !== [] || $addIds !== []) && !$this->deliveryDocHasAnyWaybill($conn, $docPost)) {
+                                $error = '本单在调整后无任何绑定运单；请至少保留或添加一位有已入库货件的客户';
+                            }
+                            if ($error === '') {
+                                $qs = ['adjusted_doc' => $docPost];
+                                if ($removeIds === [] && $addIds === []) {
+                                    $qs['adjust_noop'] = '1';
+                                }
+                                header(
+                                    'Location: /dispatch/ops/delivery-docs?' . http_build_query($qs, '', '&', PHP_QUERY_RFC3986),
+                                    true,
+                                    303
+                                );
+                                exit;
+                            }
                         }
-                    } elseif ($action === 'create_driver_run_tokens') {
-                        try {
-                            $this->driverRunCreateTokensForDoc($conn, $docPost);
-                            $message = '已重新生成司机端链接（每段最多 ' . (string)self::DRIVER_SEGMENT_CUSTOMER_COUNT . ' 位客户，有效期 7 天，旧链接作废）。';
-                            $viewDocNo = $docPost;
-                        } catch (Throwable $e) {
-                            $error = $e->getMessage();
-                            $viewDocNo = $docPost;
+                    } elseif ($action === 'preliminary_adjust_order_and_formal') {
+                        if (!$this->deliveryDocNotYetFormal($conn, $docPost)) {
+                            $error = '该单已不是初步派送单，无法提交';
+                        } elseif (!$hasStopsTable) {
+                            $error = '缺少停靠表，无法按自定义顺序转入正式派送单';
+                        } else {
+                            $rawCodes = $_POST['stop_order_customer_codes'] ?? [];
+                            $orderedCodes = [];
+                            if (is_array($rawCodes)) {
+                                foreach ($rawCodes as $v) {
+                                    $t = trim((string)$v);
+                                    if ($t !== '') {
+                                        $orderedCodes[] = $t;
+                                    }
+                                }
+                            }
+                            $rawRem = $_POST['remove_delivery_customer_ids'] ?? [];
+                            $rawAdd = $_POST['add_delivery_customer_ids'] ?? [];
+                            $removeIds = [];
+                            if (is_array($rawRem)) {
+                                foreach ($rawRem as $v) {
+                                    $i = (int)$v;
+                                    if ($i > 0) {
+                                        $removeIds[$i] = $i;
+                                    }
+                                }
+                            }
+                            $removeIds = array_values($removeIds);
+                            $addIds = [];
+                            if (is_array($rawAdd)) {
+                                foreach ($rawAdd as $v) {
+                                    $i = (int)$v;
+                                    if ($i > 0) {
+                                        $addIds[$i] = $i;
+                                    }
+                                }
+                            }
+                            $addIds = array_values($addIds);
+                            if ($removeIds !== []) {
+                                $this->unbindWaybillsFromDeliveryDoc($conn, $docPost, $removeIds);
+                                if ($hasStopsTable) {
+                                    $this->initializeDeliveryDocStops($conn, $docPost);
+                                }
+                            }
+                            if ($addIds !== []) {
+                                $bindRes = $this->preliminaryBindPoolCustomerIdsToDoc($conn, $docPost, $addIds, $hasStopsTable);
+                                if ($bindRes['error'] !== '') {
+                                    $error = $bindRes['error'];
+                                }
+                            }
+                            if ($error === '' && !$this->deliveryDocHasAnyWaybill($conn, $docPost)) {
+                                $error = '本单在调整后无任何绑定运单；请至少保留或添加一位有已入库货件的客户';
+                            }
+                            if ($error === '' && $orderedCodes === []) {
+                                $error = '请在第二步拖动排序后，再确认转入正式派送单列表';
+                            }
+                            if ($error === '') {
+                                try {
+                                    $this->preliminaryTransitionDocToFormal($conn, $docPost, $hasStopsTable, $orderedCodes);
+                                    header(
+                                        'Location: /dispatch/ops/formal-delivery-docs?' . http_build_query([
+                                            'opened_formal_doc' => $docPost,
+                                        ], '', '&', PHP_QUERY_RFC3986),
+                                        true,
+                                        303
+                                    );
+                                    exit;
+                                } catch (Throwable $e) {
+                                    $error = $e->getMessage();
+                                }
+                            }
+                        }
+                    } elseif ($action === 'delete_preliminary_delivery_doc') {
+                        if (!$this->deliveryDocNotYetFormal($conn, $docPost)) {
+                            $error = '已生成正式派送单，无法删除该初步派送单';
+                        } else {
+                            $this->unbindWaybillsFromDeliveryDoc($conn, $docPost, []);
+                            $this->purgeDeliveryDocAuxiliaryRows($conn, $docPost);
+                            $message = sprintf(t('dispatch.flash.deleted_prelim', '已删除初步派送单 %s ，绑定客户已回到「分配派送单」列表。'), $docPost);
+                        }
+                    } elseif ($action === 'add_preliminary_customers') {
+                        if (!$this->deliveryDocNotYetFormal($conn, $docPost)) {
+                            $error = '该单已进入正式派送单，无法再添加客户';
+                        } else {
+                            $rawIds = $_POST['delivery_customer_ids'] ?? [];
+                            $selectedIds = [];
+                            if (is_array($rawIds)) {
+                                foreach ($rawIds as $v) {
+                                    $id = (int)$v;
+                                    if ($id > 0) {
+                                        $selectedIds[$id] = $id;
+                                    }
+                                }
+                            }
+                            $selectedIds = array_values($selectedIds);
+                            if ($selectedIds === []) {
+                                $error = '请勾选要追加的客户';
+                            } else {
+                                $bindRes = $this->preliminaryBindPoolCustomerIdsToDoc($conn, $docPost, $selectedIds, $hasStopsTable);
+                                if ($bindRes['error'] !== '') {
+                                    $error = $bindRes['error'];
+                                } else {
+                                    $message = sprintf(t('dispatch.flash.added_customers', '已追加客户，新绑定货件 %d 件'), (int)$bindRes['affected']);
+                                }
+                            }
+                        }
+                    } elseif ($action === 'remove_preliminary_customers') {
+                        if (!$this->deliveryDocNotYetFormal($conn, $docPost)) {
+                            $error = '该单已进入正式派送单，无法删除绑定客户';
+                        } else {
+                            $rawIds = $_POST['delivery_customer_ids'] ?? [];
+                            $selectedIds = [];
+                            if (is_array($rawIds)) {
+                                foreach ($rawIds as $v) {
+                                    $id = (int)$v;
+                                    if ($id > 0) {
+                                        $selectedIds[$id] = $id;
+                                    }
+                                }
+                            }
+                            $selectedIds = array_values($selectedIds);
+                            if ($selectedIds === []) {
+                                $error = '请勾选要移除的派送客户';
+                            } else {
+                                $this->unbindWaybillsFromDeliveryDoc($conn, $docPost, $selectedIds);
+                                if ($hasStopsTable) {
+                                    $this->initializeDeliveryDocStops($conn, $docPost);
+                                }
+                                $message = '已从本初步派送单移除所选客户，其货件回到「分配派送单」列表。';
+                            }
                         }
                     }
                 }
@@ -5101,12 +6842,16 @@ class DispatchController
                     w.planned_delivery_date,
                     COUNT(*) AS piece_count,
                     COUNT(DISTINCT CONCAT(w.consigning_client_id, '#', COALESCE(NULLIF(TRIM(dc.customer_code), ''), TRIM(w.delivery_customer_code)))) AS customer_count,
-                    MIN(w.created_at) AS created_at
+                    MIN(w.created_at) AS created_at,
+                    MIN(COALESCE(NULLIF(TRIM(dc.route_primary), ''), '')) AS sort_route_primary,
+                    MIN(COALESCE(NULLIF(TRIM(dc.route_secondary), ''), '')) AS sort_route_secondary
                 FROM dispatch_waybills w
                 LEFT JOIN dispatch_delivery_customers dc ON dc.id = w.delivery_customer_id
+                LEFT JOIN dispatch_delivery_doc_workflow wf ON (wf.delivery_doc_no COLLATE utf8mb4_unicode_ci) = (w.delivery_doc_no COLLATE utf8mb4_unicode_ci)
                 WHERE {$whereSql}
+                  AND (wf.delivery_doc_no IS NULL OR TRIM(COALESCE(wf.finalized_at, '')) = '')
                 GROUP BY w.delivery_doc_no, COALESCE(NULLIF(w.dispatch_line, ''), SUBSTRING_INDEX(w.delivery_doc_no, '-', -1)), w.planned_delivery_date
-                ORDER BY w.planned_delivery_date DESC, w.delivery_doc_no DESC
+                ORDER BY sort_route_primary ASC, sort_route_secondary ASC, w.planned_delivery_date DESC, w.delivery_doc_no DESC
             ";
             $st = $conn->prepare($sql);
             if ($st) {
@@ -5139,7 +6884,7 @@ class DispatchController
                             0 AS is_final
                         FROM dispatch_waybills w
                         LEFT JOIN dispatch_delivery_customers dc ON dc.id = w.delivery_customer_id
-                        WHERE w.delivery_doc_no = ?
+                        WHERE w.delivery_doc_no COLLATE utf8mb4_unicode_ci = ?
                         GROUP BY
                             COALESCE(NULLIF(TRIM(dc.customer_code), ''), TRIM(w.delivery_customer_code)),
                             COALESCE(NULLIF(TRIM(dc.wechat_id), ''), NULLIF(TRIM(dc.line_id), ''), ''),
@@ -5178,8 +6923,993 @@ class DispatchController
             $error = $e->getMessage();
         }
 
-        $title = '派送业务 / 派送操作 / 派送单列表';
+        $title = '派送业务 / 派送操作 / 初步派送单列表';
         $contentView = __DIR__ . '/../Views/dispatch/ops_delivery_docs.php';
+        require __DIR__ . '/../Views/layouts/main.php';
+    }
+
+    private function ensureDispatchDeliveryDocWorkflowTables(mysqli $conn): void
+    {
+        $conn->query("
+            CREATE TABLE IF NOT EXISTS dispatch_delivery_doc_workflow (
+                delivery_doc_no VARCHAR(64) NOT NULL PRIMARY KEY,
+                optimized_at DATETIME NULL,
+                finalized_at DATETIME NULL,
+                tokens_generated_at DATETIME NULL,
+                assigned_driver_user_id INT UNSIGNED NULL,
+                assigned_at DATETIME NULL,
+                picking_completed_at DATETIME NULL,
+                created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+                updated_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+                KEY idx_workflow_assigned_driver (assigned_driver_user_id),
+                CONSTRAINT fk_workflow_assigned_driver FOREIGN KEY (assigned_driver_user_id) REFERENCES users(id) ON DELETE SET NULL
+            ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci
+        ");
+        if (!$this->columnExists($conn, 'dispatch_delivery_doc_workflow', 'driver_run_completed_at')) {
+            $conn->query('ALTER TABLE dispatch_delivery_doc_workflow ADD COLUMN driver_run_completed_at DATETIME NULL DEFAULT NULL AFTER picking_completed_at');
+        }
+    }
+
+    private function getDispatchDeliveryDocWorkflowRow(mysqli $conn, string $docNo): array
+    {
+        $doc = trim($docNo);
+        if ($doc === '') {
+            return [];
+        }
+        $st = $conn->prepare('SELECT * FROM dispatch_delivery_doc_workflow WHERE delivery_doc_no = ? LIMIT 1');
+        if (!$st) {
+            return [];
+        }
+        $st->bind_param('s', $doc);
+        $st->execute();
+        $row = $st->get_result()->fetch_assoc() ?: [];
+        $st->close();
+        return $row;
+    }
+
+    private function markDispatchDeliveryDocWorkflowStep(mysqli $conn, string $docNo, string $column): void
+    {
+        $doc = trim($docNo);
+        if ($doc === '' || !in_array($column, ['optimized_at', 'finalized_at', 'tokens_generated_at', 'picking_completed_at', 'driver_run_completed_at'], true)) {
+            return;
+        }
+        $sql = "INSERT INTO dispatch_delivery_doc_workflow (delivery_doc_no, {$column}) VALUES (?, NOW())
+                ON DUPLICATE KEY UPDATE {$column} = NOW()";
+        $st = $conn->prepare($sql);
+        if (!$st) {
+            return;
+        }
+        $st->bind_param('s', $doc);
+        $st->execute();
+        $st->close();
+    }
+
+    /** 尚未发布为正式（无 finalized_at），仍属初步派送单，可整单删除或在单内增删客户 */
+    private function deliveryDocNotYetFormal(mysqli $conn, string $docNo): bool
+    {
+        $d = trim($docNo);
+        if ($d === '') {
+            return false;
+        }
+        $this->ensureDispatchDeliveryDocWorkflowTables($conn);
+        $row = $this->getDispatchDeliveryDocWorkflowRow($conn, $d);
+        if ($row === []) {
+            return true;
+        }
+
+        return trim((string)($row['finalized_at'] ?? '')) === '';
+    }
+
+    /**
+     * 初步单：根据当前运单重写停靠草稿并发布为最终停靠，写入 optimized_at / finalized_at（不生成司机 token）。
+     *
+     * @param list<string>|null $orderedCustomerCodes 非 null 时按该客户编码顺序写入停靠（须与单内聚合客户集合一致）；null 时按主/副路线默认排序。
+     */
+    private function preliminaryTransitionDocToFormal(mysqli $conn, string $docPost, bool $hasStopsTable, ?array $orderedCustomerCodes = null): void
+    {
+        $doc = trim($docPost);
+        if ($doc === '') {
+            throw new RuntimeException('派送单号无效');
+        }
+        if ($hasStopsTable) {
+            if ($orderedCustomerCodes !== null) {
+                $codes = [];
+                foreach ($orderedCustomerCodes as $c) {
+                    $t = trim((string)$c);
+                    if ($t !== '') {
+                        $codes[] = $t;
+                    }
+                }
+                if ($codes === []) {
+                    throw new RuntimeException('请完成客户排序后再提交');
+                }
+                $this->initializeDeliveryDocStopsWithOrderedCustomerCodes($conn, $doc, $codes);
+            } else {
+                $this->initializeDeliveryDocStops($conn, $doc);
+            }
+            $this->publishDeliveryDocStopsFinal($conn, $doc);
+        }
+        $this->markDispatchDeliveryDocWorkflowStep($conn, $doc, 'optimized_at');
+        $this->markDispatchDeliveryDocWorkflowStep($conn, $doc, 'finalized_at');
+    }
+
+    /**
+     * 与 deliveryDocCustomersWithGeo 中「无停靠表草稿」分支一致：按运单聚合客户行（主/副路线排序）。
+     *
+     * @return list<array<string,mixed>>
+     */
+    private function deliveryDocAggregatedCustomerRowsFromWaybills(mysqli $conn, string $deliveryDocNo): array
+    {
+        $doc = trim($deliveryDocNo);
+        $rows = [];
+        if ($doc === '' || !$this->columnExists($conn, 'dispatch_waybills', 'delivery_doc_no')) {
+            return $rows;
+        }
+        $sql = "
+            SELECT
+                COALESCE(NULLIF(TRIM(dc.customer_code), ''), TRIM(w.delivery_customer_code)) AS customer_code,
+                COALESCE(NULLIF(TRIM(dc.wechat_id), ''), NULLIF(TRIM(dc.line_id), ''), '') AS wx_or_line,
+                COALESCE(NULLIF(TRIM(dc.route_primary), ''), '') AS route_primary,
+                COALESCE(NULLIF(TRIM(dc.route_secondary), ''), '') AS route_secondary,
+                MAX(COALESCE(NULLIF(TRIM(dc.community_name_th), ''), '')) AS community_name_th,
+                MAX(COALESCE(NULLIF(TRIM(dc.addr_th_full), ''), '')) AS addr_th_full,
+                MAX(COALESCE(NULLIF(TRIM(dc.addr_en_full), ''), '')) AS addr_en_full,
+                MAX(dc.latitude) AS latitude,
+                MAX(dc.longitude) AS longitude,
+                COUNT(*) AS piece_count
+            FROM dispatch_waybills w
+            LEFT JOIN dispatch_delivery_customers dc ON dc.id = w.delivery_customer_id
+            WHERE w.delivery_doc_no COLLATE utf8mb4_unicode_ci = ?
+            GROUP BY
+                COALESCE(NULLIF(TRIM(dc.customer_code), ''), TRIM(w.delivery_customer_code)),
+                COALESCE(NULLIF(TRIM(dc.wechat_id), ''), NULLIF(TRIM(dc.line_id), ''), ''),
+                COALESCE(NULLIF(TRIM(dc.route_primary), ''), ''),
+                COALESCE(NULLIF(TRIM(dc.route_secondary), ''), '')
+            ORDER BY route_primary ASC, route_secondary ASC, customer_code ASC
+        ";
+        $st = $conn->prepare($sql);
+        if ($st) {
+            $st->bind_param('s', $doc);
+            $st->execute();
+            $res = $st->get_result();
+            while ($res && ($r = $res->fetch_assoc())) {
+                $rows[] = $r;
+            }
+            $st->close();
+        }
+
+        return $rows;
+    }
+
+    /**
+     * 按给定客户编码顺序重建停靠草稿（未发布 is_final=0）。
+     *
+     * @param list<string> $orderedCustomerCodes
+     */
+    private function initializeDeliveryDocStopsWithOrderedCustomerCodes(mysqli $conn, string $deliveryDocNo, array $orderedCustomerCodes): void
+    {
+        if (!$this->tableExists($conn, 'dispatch_delivery_doc_stops')) {
+            throw new RuntimeException('请先执行 migration：044_dispatch_delivery_doc_stops.sql');
+        }
+        $doc = trim($deliveryDocNo);
+        if ($doc === '') {
+            return;
+        }
+        $rows = $this->deliveryDocAggregatedCustomerRowsFromWaybills($conn, $doc);
+        if ($rows === []) {
+            throw new RuntimeException('本单无可写入停靠的客户');
+        }
+        $map = [];
+        foreach ($rows as $r) {
+            $c = trim((string)($r['customer_code'] ?? ''));
+            if ($c === '') {
+                continue;
+            }
+            $map[$c] = $r;
+        }
+        $normalizedPosted = [];
+        foreach ($orderedCustomerCodes as $c) {
+            $t = trim((string)$c);
+            if ($t !== '') {
+                $normalizedPosted[] = $t;
+            }
+        }
+        $keys = array_keys($map);
+        sort($keys);
+        $postedSorted = $normalizedPosted;
+        sort($postedSorted);
+        if ($keys !== $postedSorted) {
+            throw new RuntimeException('提交的客户顺序与当前单内客户不一致，请关闭弹窗后重试');
+        }
+        if (count($normalizedPosted) !== count($map)) {
+            throw new RuntimeException('客户顺序条数与单内客户数不一致');
+        }
+        $orderedRows = [];
+        foreach ($normalizedPosted as $code) {
+            if (!isset($map[$code])) {
+                throw new RuntimeException(t('dispatch.err.unknown_client_code', '未知的客户编码：') . $code);
+            }
+            $orderedRows[] = $map[$code];
+        }
+        $del = $conn->prepare('DELETE FROM dispatch_delivery_doc_stops WHERE delivery_doc_no = ?');
+        if ($del) {
+            $del->bind_param('s', $doc);
+            $del->execute();
+            $del->close();
+        }
+        $ins = $conn->prepare("
+            INSERT INTO dispatch_delivery_doc_stops (
+                delivery_doc_no, customer_code, wx_or_line, route_primary, route_secondary,
+                community_name_th, addr_th_full, addr_en_full, latitude, longitude,
+                piece_count, stop_order, segment_index, is_final
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 0)
+        ");
+        if (!$ins) {
+            return;
+        }
+        foreach ($orderedRows as $idx => $r) {
+            $code = trim((string)($r['customer_code'] ?? ''));
+            if ($code === '') {
+                continue;
+            }
+            $wx = trim((string)($r['wx_or_line'] ?? ''));
+            $rp = trim((string)($r['route_primary'] ?? ''));
+            $rs = trim((string)($r['route_secondary'] ?? ''));
+            $th = trim((string)($r['community_name_th'] ?? ''));
+            $addrTh = trim((string)($r['addr_th_full'] ?? ''));
+            $addrEn = trim((string)($r['addr_en_full'] ?? ''));
+            $latRaw = $r['latitude'] ?? null;
+            $lngRaw = $r['longitude'] ?? null;
+            $lat = ($latRaw !== null && $latRaw !== '') ? (float)$latRaw : null;
+            $lng = ($lngRaw !== null && $lngRaw !== '') ? (float)$lngRaw : null;
+            $piece = (int)($r['piece_count'] ?? 0);
+            $stopOrder = (int)$idx + 1;
+            $segment = (int)floor($idx / self::DRIVER_SEGMENT_CUSTOMER_COUNT);
+            $ins->bind_param(
+                'ssssssssddiii',
+                $doc,
+                $code,
+                $wx,
+                $rp,
+                $rs,
+                $th,
+                $addrTh,
+                $addrEn,
+                $lat,
+                $lng,
+                $piece,
+                $stopOrder,
+                $segment
+            );
+            $ins->execute();
+        }
+        $ins->close();
+    }
+
+    /**
+     * @param list<int> $deliveryCustomerIds
+     *
+     * @return array{error:string,affected:int}
+     */
+    private function preliminaryBindPoolCustomerIdsToDoc(mysqli $conn, string $docPost, array $deliveryCustomerIds, bool $hasStopsTable): array
+    {
+        $deliveryCustomerIds = array_values(array_unique(array_filter(array_map(static fn ($v) => (int)$v, $deliveryCustomerIds), static fn ($v) => $v > 0)));
+        if ($deliveryCustomerIds === []) {
+            return ['error' => '', 'affected' => 0];
+        }
+        $metaSt = $conn->prepare('
+            SELECT dispatch_line, planned_delivery_date
+            FROM dispatch_waybills
+            WHERE delivery_doc_no COLLATE utf8mb4_unicode_ci = ?
+            LIMIT 1
+        ');
+        $line = '';
+        $dateRaw = '';
+        if ($metaSt) {
+            $metaSt->bind_param('s', $docPost);
+            $metaSt->execute();
+            $mr = $metaSt->get_result()->fetch_assoc();
+            $metaSt->close();
+            if (is_array($mr)) {
+                $line = strtoupper(trim((string)($mr['dispatch_line'] ?? '')));
+                $dateRaw = trim((string)($mr['planned_delivery_date'] ?? ''));
+            }
+        }
+        if ($line === '' || !in_array($line, ['A', 'B', 'C', 'D', 'E'], true) || $dateRaw === '') {
+            return ['error' => '无法读取该派送单的线路或日期，请检查运单数据', 'affected' => 0];
+        }
+        $toStatus = '已入库';
+        $fromStatus = '已入库';
+        foreach ($deliveryCustomerIds as $deliveryId) {
+            $chk = $conn->prepare('
+                SELECT UPPER(TRIM(COALESCE(route_primary, \'\'))) AS rp
+                FROM dispatch_delivery_customers
+                WHERE id = ? AND status = 1
+                LIMIT 1
+            ');
+            if ($chk) {
+                $chk->bind_param('i', $deliveryId);
+                $chk->execute();
+                $cr = $chk->get_result()->fetch_assoc();
+                $chk->close();
+                $rp = strtoupper(trim((string)($cr['rp'] ?? '')));
+                if ($rp === 'OT' || $rp === 'UDA') {
+                    return ['error' => '主线路为 OT 或 UDA 的客户不能追加到初步派送单', 'affected' => 0];
+                }
+            }
+        }
+        $totalAffected = 0;
+        foreach ($deliveryCustomerIds as $deliveryId) {
+            $st = $conn->prepare('
+                SELECT id, consigning_client_id, customer_code
+                FROM dispatch_delivery_customers
+                WHERE id = ? AND status = 1
+                LIMIT 1
+            ');
+            $customer = null;
+            if ($st) {
+                $st->bind_param('i', $deliveryId);
+                $st->execute();
+                $customer = $st->get_result()->fetch_assoc() ?: null;
+                $st->close();
+            }
+            if (!$customer) {
+                continue;
+            }
+            $ccId = (int)($customer['consigning_client_id'] ?? 0);
+            $code = trim((string)($customer['customer_code'] ?? ''));
+            $up = $conn->prepare("
+                UPDATE dispatch_waybills
+                SET order_status = ?, delivery_doc_no = ?, dispatch_line = ?, planned_delivery_date = ?
+                WHERE consigning_client_id = ?
+                  AND COALESCE(order_status, '') = ?
+                  AND TRIM(COALESCE(delivery_doc_no, '')) = ''
+                  AND (
+                      delivery_customer_id = ?
+                      OR (delivery_customer_id IS NULL AND TRIM(COALESCE(delivery_customer_code, '')) = ?)
+                  )
+            ");
+            if ($up) {
+                $up->bind_param('ssssisis', $toStatus, $docPost, $line, $dateRaw, $ccId, $fromStatus, $deliveryId, $code);
+                $up->execute();
+                $totalAffected += (int)$up->affected_rows;
+                $up->close();
+            }
+        }
+        if ($hasStopsTable) {
+            $this->initializeDeliveryDocStops($conn, $docPost);
+        }
+
+        return ['error' => '', 'affected' => $totalAffected];
+    }
+
+    private function deliveryDocHasAnyWaybill(mysqli $conn, string $docNo): bool
+    {
+        $doc = trim($docNo);
+        if ($doc === '') {
+            return false;
+        }
+        $st = $conn->prepare('SELECT 1 FROM dispatch_waybills WHERE delivery_doc_no COLLATE utf8mb4_unicode_ci = ? LIMIT 1');
+        if (!$st) {
+            return false;
+        }
+        $st->bind_param('s', $doc);
+        $st->execute();
+        $ok = (bool)$st->get_result()->fetch_row();
+        $st->close();
+
+        return $ok;
+    }
+
+    /**
+     * 将运单从派送单号上解绑（清空 delivery_doc_no / 线路 / 日期），不改 order_status。
+     *
+     * @param list<int> $deliveryCustomerIds 为空则解绑该单号下全部运单
+     */
+    private function unbindWaybillsFromDeliveryDoc(mysqli $conn, string $docNo, array $deliveryCustomerIds): int
+    {
+        $doc = trim($docNo);
+        if ($doc === '' || !$this->columnExists($conn, 'dispatch_waybills', 'delivery_doc_no')) {
+            return 0;
+        }
+        if ($deliveryCustomerIds === []) {
+            $extra = $this->waybillSqlFragmentResetInboundOnDeliveryDocUnbind($conn);
+            $up = $conn->prepare("
+                UPDATE dispatch_waybills
+                SET delivery_doc_no = '', dispatch_line = '', planned_delivery_date = NULL{$extra}
+                WHERE delivery_doc_no COLLATE utf8mb4_unicode_ci = ?
+            ");
+            if (!$up) {
+                return 0;
+            }
+            $up->bind_param('s', $doc);
+            $up->execute();
+            $n = (int)$up->affected_rows;
+            $up->close();
+
+            return $n;
+        }
+        $total = 0;
+        foreach ($deliveryCustomerIds as $rawId) {
+            $deliveryId = (int)$rawId;
+            if ($deliveryId <= 0) {
+                continue;
+            }
+            $st = $conn->prepare('
+                SELECT consigning_client_id, customer_code
+                FROM dispatch_delivery_customers
+                WHERE id = ? AND status = 1
+                LIMIT 1
+            ');
+            if (!$st) {
+                continue;
+            }
+            $st->bind_param('i', $deliveryId);
+            $st->execute();
+            $customer = $st->get_result()->fetch_assoc() ?: null;
+            $st->close();
+            if (!$customer) {
+                continue;
+            }
+            $ccId = (int)($customer['consigning_client_id'] ?? 0);
+            $code = trim((string)($customer['customer_code'] ?? ''));
+            if ($ccId <= 0 || $code === '') {
+                continue;
+            }
+            $extra = $this->waybillSqlFragmentResetInboundOnDeliveryDocUnbind($conn);
+            $up = $conn->prepare("
+                UPDATE dispatch_waybills
+                SET delivery_doc_no = '', dispatch_line = '', planned_delivery_date = NULL{$extra}
+                WHERE delivery_doc_no COLLATE utf8mb4_unicode_ci = ?
+                  AND consigning_client_id = ?
+                  AND (
+                      delivery_customer_id = ?
+                      OR (delivery_customer_id IS NULL AND TRIM(COALESCE(delivery_customer_code, '')) = ?)
+                  )
+            ");
+            if (!$up) {
+                continue;
+            }
+            $up->bind_param('siis', $doc, $ccId, $deliveryId, $code);
+            $up->execute();
+            $total += (int)$up->affected_rows;
+            $up->close();
+        }
+
+        return $total;
+    }
+
+    private function purgeDeliveryDocAuxiliaryRows(mysqli $conn, string $docNo): void
+    {
+        $doc = trim($docNo);
+        if ($doc === '') {
+            return;
+        }
+        if ($this->tableExists($conn, 'dispatch_driver_run_tokens')) {
+            $dt = $conn->prepare('DELETE FROM dispatch_driver_run_tokens WHERE delivery_doc_no = ?');
+            if ($dt) {
+                $dt->bind_param('s', $doc);
+                $dt->execute();
+                $dt->close();
+            }
+        }
+        if ($this->tableExists($conn, 'dispatch_delivery_doc_stops')) {
+            $ds = $conn->prepare('DELETE FROM dispatch_delivery_doc_stops WHERE delivery_doc_no = ?');
+            if ($ds) {
+                $ds->bind_param('s', $doc);
+                $ds->execute();
+                $ds->close();
+            }
+        }
+        $dwf = $conn->prepare('DELETE FROM dispatch_delivery_doc_workflow WHERE delivery_doc_no = ?');
+        if ($dwf) {
+            $dwf->bind_param('s', $doc);
+            $dwf->execute();
+            $dwf->close();
+        }
+    }
+
+    /**
+     * 正式派送单内：仍有非「已派送」运单的派送客户（用于部份完成回滚）。
+     *
+     * @return list<array<string,mixed>>
+     */
+    private function formalDocCustomersWithNonDeliveredWaybills(mysqli $conn, string $docNo): array
+    {
+        $doc = trim($docNo);
+        $rows = [];
+        if ($doc === '' || !$this->columnExists($conn, 'dispatch_waybills', 'delivery_doc_no')) {
+            return $rows;
+        }
+        $sql = "
+            SELECT
+                w.delivery_customer_id AS delivery_customer_id,
+                MAX(w.consigning_client_id) AS consigning_client_id,
+                TRIM(MAX(COALESCE(NULLIF(TRIM(dc.customer_code), ''), TRIM(w.delivery_customer_code)))) AS customer_code,
+                SUM(CASE WHEN COALESCE(w.order_status, '') = '已派送' THEN 1 ELSE 0 END) AS delivered_rows,
+                COUNT(*) AS total_rows
+            FROM dispatch_waybills w
+            LEFT JOIN dispatch_delivery_customers dc ON dc.id = w.delivery_customer_id
+            WHERE w.delivery_doc_no COLLATE utf8mb4_unicode_ci = ?
+              AND w.delivery_customer_id IS NOT NULL
+              AND w.delivery_customer_id > 0
+            GROUP BY w.delivery_customer_id
+            HAVING SUM(CASE WHEN COALESCE(w.order_status, '') = '已派送' THEN 1 ELSE 0 END) < COUNT(*)
+            ORDER BY customer_code ASC
+        ";
+        $st = $conn->prepare($sql);
+        if (!$st) {
+            return $rows;
+        }
+        $st->bind_param('s', $doc);
+        $st->execute();
+        $res = $st->get_result();
+        while ($res && ($r = $res->fetch_assoc())) {
+            $rows[] = $r;
+        }
+        $st->close();
+
+        return $rows;
+    }
+
+    private function activeDriversForAssign(mysqli $conn): array
+    {
+        $rows = [];
+        $res = $conn->query("SELECT id, username, full_name FROM users WHERE status = 1 ORDER BY username ASC");
+        if ($res instanceof mysqli_result) {
+            while ($r = $res->fetch_assoc()) {
+                $rows[] = $r;
+            }
+            $res->free();
+        }
+        return $rows;
+    }
+
+    public function opsFormalDeliveryDocs(): void
+    {
+        if (!$this->hasAnyPermission(['menu.nav.dispatch.ops.formal_docs', 'menu.dispatch', 'menu.dashboard'])) {
+            $this->denyNoPermission('无权限访问正式派送单列表');
+        }
+        $conn = require __DIR__ . '/../../config/database.php';
+        if (isset($_GET['formal_detail_json']) && (string)$_GET['formal_detail_json'] === '1') {
+            header('Content-Type: application/json; charset=utf-8');
+            $doc = trim((string)($_GET['delivery_doc_no'] ?? ''));
+            if ($doc === '') {
+                echo json_encode(['ok' => false, 'error' => '缺少派送单号'], JSON_UNESCAPED_UNICODE);
+                exit;
+            }
+            try {
+                $this->ensureDispatchSchema($conn);
+                $this->ensureDispatchOrderV2($conn);
+                if (!$this->columnExists($conn, 'dispatch_waybills', 'delivery_doc_no')) {
+                    throw new RuntimeException('派送单字段未建立');
+                }
+                $detailRows = $this->formalDeliveryDocCustomerDetailRows($conn, $doc);
+                echo json_encode(['ok' => true, 'delivery_doc_no' => $doc, 'rows' => $detailRows], JSON_UNESCAPED_UNICODE);
+            } catch (Throwable $e) {
+                echo json_encode(['ok' => false, 'error' => $e->getMessage()], JSON_UNESCAPED_UNICODE);
+            }
+            exit;
+        }
+        if (isset($_GET['formal_undelivered_json']) && (string)$_GET['formal_undelivered_json'] === '1') {
+            header('Content-Type: application/json; charset=utf-8');
+            $doc = trim((string)($_GET['delivery_doc_no'] ?? ''));
+            if ($doc === '') {
+                echo json_encode(['ok' => false, 'error' => '缺少派送单号'], JSON_UNESCAPED_UNICODE);
+                exit;
+            }
+            try {
+                $this->ensureDispatchSchema($conn);
+                $this->ensureDispatchOrderV2($conn);
+                if (!$this->columnExists($conn, 'dispatch_waybills', 'delivery_doc_no')) {
+                    throw new RuntimeException('派送单字段未建立');
+                }
+                if ($this->deliveryDocNotYetFormal($conn, $doc)) {
+                    throw new RuntimeException('该单尚未进入正式派送单流程');
+                }
+                $list = $this->formalDocCustomersWithNonDeliveredWaybills($conn, $doc);
+                echo json_encode(['ok' => true, 'delivery_doc_no' => $doc, 'rows' => $list], JSON_UNESCAPED_UNICODE);
+            } catch (Throwable $e) {
+                echo json_encode(['ok' => false, 'error' => $e->getMessage()], JSON_UNESCAPED_UNICODE);
+            }
+            exit;
+        }
+        $schemaReady = true;
+        $error = '';
+        $message = '';
+        $rows = [];
+        $drivers = [];
+        $assignedDriverFilterOptions = [];
+        $qFormalDate = trim((string)($_GET['q_planned_delivery_date'] ?? ''));
+        $qFormalDriverId = (int)($_GET['q_driver_user_id'] ?? 0);
+        $flashOpenedFormal = trim((string)($_GET['opened_formal_doc'] ?? ''));
+        if ($flashOpenedFormal !== '' && preg_match('/^\d{8}-[A-E]$/', $flashOpenedFormal)) {
+            $message = sprintf(t('dispatch.flash.opened_formal', '已从「初步派送单」转入本列表：%s。请先点「生成路线分段」；分段后可在本页指派司机，并与「派送单拣货表」并行出库。'), $flashOpenedFormal);
+        }
+        try {
+            $this->ensureDispatchSchema($conn);
+            $this->ensureDispatchOrderV2($conn);
+            $this->ensureDispatchDeliveryDocWorkflowTables($conn);
+            if ($_SERVER['REQUEST_METHOD'] === 'POST') {
+                $postAction = trim((string)($_POST['action'] ?? ''));
+                $doc = trim((string)($_POST['delivery_doc_no'] ?? ''));
+                if ($postAction === 'formal_partial_unbind_customers') {
+                    if ($doc === '') {
+                        $error = '参数无效';
+                    } elseif ($this->deliveryDocNotYetFormal($conn, $doc)) {
+                        $error = '仅正式派送单可部份回滚客户';
+                    } else {
+                        $rawIds = $_POST['delivery_customer_ids'] ?? [];
+                        $ids = [];
+                        if (is_array($rawIds)) {
+                            foreach ($rawIds as $v) {
+                                $i = (int)$v;
+                                if ($i > 0) {
+                                    $ids[$i] = $i;
+                                }
+                            }
+                        }
+                        $ids = array_values($ids);
+                        if ($ids === []) {
+                            $error = '请勾选要回滚的派送客户';
+                        } else {
+                            $this->unbindWaybillsFromDeliveryDoc($conn, $doc, $ids);
+                            if ($this->tableExists($conn, 'dispatch_delivery_doc_stops')) {
+                                $this->initializeDeliveryDocStops($conn, $doc);
+                            }
+                            $message = '已将该批客户从本正式派送单解绑，其已入库货件回到「分配派送单」列表。';
+                        }
+                    }
+                } elseif ($postAction === 'assign_formal_doc_driver') {
+                    $driverId = (int)($_POST['driver_user_id'] ?? 0);
+                    if ($doc === '' || $driverId <= 0) {
+                        $error = '请选择司机后再指派';
+                    } else {
+                        $wf = $this->getDispatchDeliveryDocWorkflowRow($conn, $doc);
+                        if (trim((string)($wf['tokens_generated_at'] ?? '')) === '') {
+                            $error = '须先在「生成路线分段」完成本单分段后，方可指派司机';
+                        } else {
+                            $st = $conn->prepare("
+                                INSERT INTO dispatch_delivery_doc_workflow (delivery_doc_no, assigned_driver_user_id, assigned_at)
+                                VALUES (?, ?, NOW())
+                                ON DUPLICATE KEY UPDATE assigned_driver_user_id = VALUES(assigned_driver_user_id), assigned_at = NOW()
+                            ");
+                            if ($st) {
+                                $st->bind_param('si', $doc, $driverId);
+                                $st->execute();
+                                $st->close();
+                                $message = '指派成功。司机可在「司机派送」中查看本单分段链接。';
+                            } else {
+                                $error = '指派失败';
+                            }
+                        }
+                    }
+                } elseif ($postAction === 'formal_generate_driver_segments') {
+                    if ($doc === '') {
+                        $error = '参数无效';
+                    } else {
+                        $wf = $this->getDispatchDeliveryDocWorkflowRow($conn, $doc);
+                        if (trim((string)($wf['finalized_at'] ?? '')) === '') {
+                            $error = '该单尚未从初步派送单转入正式流程，无法生成路线分段';
+                        } elseif (trim((string)($wf['tokens_generated_at'] ?? '')) !== '') {
+                            $error = '本单已生成过路线分段；如需重新生成请联系技术处理（避免拣货与司机端状态不一致）';
+                        } else {
+                            try {
+                                $this->driverRunCreateTokensForDoc($conn, $doc);
+                                $this->markDispatchDeliveryDocWorkflowStep($conn, $doc, 'tokens_generated_at');
+                                $message = sprintf(t('dispatch.flash.segments_generated', '已生成路线分段与司机端链接（每段最多 %d 位客户，有效期 7 天）。本单已进入「派送单拣货表」；请回本页「指派」司机（可与拣货并行）。'), (int)self::DRIVER_SEGMENT_CUSTOMER_COUNT);
+                            } catch (Throwable $e) {
+                                $error = $e->getMessage();
+                            }
+                        }
+                    }
+                } elseif ($postAction === 'formal_driver_run_complete') {
+                    if ($doc === '') {
+                        $error = '参数无效';
+                    } else {
+                        $st = $conn->prepare('
+                            UPDATE dispatch_delivery_doc_workflow
+                            SET driver_run_completed_at = NOW()
+                            WHERE delivery_doc_no = ?
+                              AND assigned_driver_user_id IS NOT NULL
+                              AND driver_run_completed_at IS NULL
+                        ');
+                        if ($st) {
+                            $st->bind_param('s', $doc);
+                            $st->execute();
+                            $st->close();
+                            $message = '已标记该单司机派送完成。';
+                        }
+                    }
+                } elseif ($postAction === 'formal_revert_to_preliminary') {
+                    if ($doc === '') {
+                        $error = '参数无效';
+                    } elseif ($this->deliveryDocNotYetFormal($conn, $doc)) {
+                        $error = '该单不在正式派送单流程中，无需退回';
+                    } else {
+                        $wf = $this->getDispatchDeliveryDocWorkflowRow($conn, $doc);
+                        if ((int)($wf['assigned_driver_user_id'] ?? 0) > 0) {
+                            $error = '已指派司机，无法退回初步派送单；请先协调司机端与拣货状态后再联系技术处理';
+                        } elseif (trim((string)($wf['driver_run_completed_at'] ?? '')) !== '') {
+                            $error = '司机派送已标记完成，无法退回初步派送单';
+                        } else {
+                            // 清 workflow / 分段 token / 停靠点；运单仍绑定原派送单号，回到初步列表（无 finalized_at）
+                            $this->purgeDeliveryDocAuxiliaryRows($conn, $doc);
+                            header(
+                                'Location: /dispatch/ops/delivery-docs?' . http_build_query(['reverted_doc' => $doc], '', '&', PHP_QUERY_RFC3986),
+                                true,
+                                303
+                            );
+                            exit;
+                        }
+                    }
+                }
+            }
+            $drivers = $this->activeDriversForAssign($conn);
+            $resDrv = $conn->query("
+                SELECT DISTINCT u.id, u.username, u.full_name
+                FROM dispatch_delivery_doc_workflow wf
+                INNER JOIN users u ON u.id = wf.assigned_driver_user_id
+                WHERE wf.assigned_driver_user_id IS NOT NULL
+                ORDER BY u.username ASC
+            ");
+            if ($resDrv instanceof mysqli_result) {
+                while ($dr = $resDrv->fetch_assoc()) {
+                    $assignedDriverFilterOptions[] = $dr;
+                }
+                $resDrv->free();
+            }
+            // 拣货表点「完成」后仍保留在本列表；列出已发布最终停靠（finalized）的正式派送单，与是否已生成分段 token 无关
+            $whereFormal = [
+                "TRIM(COALESCE(w.delivery_doc_no, '')) <> ''",
+                "COALESCE(wf.finalized_at, '') <> ''",
+            ];
+            $typesF = '';
+            $paramsF = [];
+            if ($qFormalDate !== '') {
+                $whereFormal[] = 'w.planned_delivery_date = ?';
+                $typesF .= 's';
+                $paramsF[] = $qFormalDate;
+            }
+            if ($qFormalDriverId > 0) {
+                $whereFormal[] = 'wf.assigned_driver_user_id = ?';
+                $typesF .= 'i';
+                $paramsF[] = $qFormalDriverId;
+            }
+            $whereSqlF = implode(' AND ', $whereFormal);
+            $sql = "
+                SELECT
+                    w.delivery_doc_no,
+                    MAX(w.planned_delivery_date) AS planned_delivery_date,
+                    COUNT(DISTINCT CONCAT(w.consigning_client_id, '#', COALESCE(NULLIF(TRIM(dc.customer_code), ''), TRIM(w.delivery_customer_code)))) AS customer_count,
+                    COALESCE(GROUP_CONCAT(DISTINCT NULLIF(TRIM(COALESCE(dc.addr_amphoe, dc.community_name_th, '')), '') ORDER BY NULLIF(TRIM(COALESCE(dc.addr_amphoe, dc.community_name_th, '')), '') SEPARATOR '/'), '-') AS delivery_area,
+                    (SELECT wf2.assigned_driver_user_id FROM dispatch_delivery_doc_workflow wf2 WHERE (wf2.delivery_doc_no COLLATE utf8mb4_unicode_ci) = (w.delivery_doc_no COLLATE utf8mb4_unicode_ci) LIMIT 1) AS assigned_driver_user_id,
+                    (SELECT TRIM(COALESCE(NULLIF(u2.full_name, ''), u2.username, '')) FROM dispatch_delivery_doc_workflow wf2 LEFT JOIN users u2 ON u2.id = wf2.assigned_driver_user_id WHERE (wf2.delivery_doc_no COLLATE utf8mb4_unicode_ci) = (w.delivery_doc_no COLLATE utf8mb4_unicode_ci) LIMIT 1) AS assigned_driver_name,
+                    (SELECT wf2.driver_run_completed_at FROM dispatch_delivery_doc_workflow wf2 WHERE (wf2.delivery_doc_no COLLATE utf8mb4_unicode_ci) = (w.delivery_doc_no COLLATE utf8mb4_unicode_ci) LIMIT 1) AS driver_run_completed_at,
+                    (SELECT wf2.picking_completed_at FROM dispatch_delivery_doc_workflow wf2 WHERE (wf2.delivery_doc_no COLLATE utf8mb4_unicode_ci) = (w.delivery_doc_no COLLATE utf8mb4_unicode_ci) LIMIT 1) AS picking_completed_at,
+                    MAX(wf.tokens_generated_at) AS tokens_generated_at,
+                    MIN(COALESCE(NULLIF(TRIM(dc.route_primary), ''), '')) AS sort_route_primary,
+                    MIN(COALESCE(NULLIF(TRIM(dc.route_secondary), ''), '')) AS sort_route_secondary
+                FROM dispatch_waybills w
+                LEFT JOIN dispatch_delivery_customers dc ON dc.id = w.delivery_customer_id
+                INNER JOIN dispatch_delivery_doc_workflow wf ON (wf.delivery_doc_no COLLATE utf8mb4_unicode_ci) = (w.delivery_doc_no COLLATE utf8mb4_unicode_ci)
+                WHERE {$whereSqlF}
+                GROUP BY w.delivery_doc_no
+                ORDER BY sort_route_primary ASC, sort_route_secondary ASC, MAX(w.planned_delivery_date) DESC, w.delivery_doc_no DESC
+            ";
+            $stF = $conn->prepare($sql);
+            if ($stF) {
+                if ($typesF !== '') {
+                    $stF->bind_param($typesF, ...$paramsF);
+                }
+                $stF->execute();
+                $res = $stF->get_result();
+                while ($res && ($r = $res->fetch_assoc())) {
+                    $rows[] = $r;
+                }
+                $stF->close();
+            }
+        } catch (Throwable $e) {
+            $schemaReady = false;
+            $error = $e->getMessage();
+        }
+        $title = '派送业务 / 派送操作 / 正式派送单列表';
+        $contentView = __DIR__ . '/../Views/dispatch/ops_formal_delivery_docs.php';
+        require __DIR__ . '/../Views/layouts/main.php';
+    }
+
+    public function opsDeliveryPickSheets(): void
+    {
+        if (!$this->hasAnyPermission(['menu.nav.dispatch.ops.pick_sheets', 'menu.dispatch', 'menu.dashboard'])) {
+            $this->denyNoPermission('无权限访问派送单拣货表');
+        }
+        $conn = require __DIR__ . '/../../config/database.php';
+        $schemaReady = true;
+        $error = '';
+        $message = '';
+        $rows = [];
+        $detailRows = [];
+        $viewDocNo = trim((string)($_GET['delivery_doc_no'] ?? ''));
+        try {
+            $this->ensureDispatchSchema($conn);
+            $this->ensureDispatchOrderV2($conn);
+            $this->ensureDispatchDeliveryDocWorkflowTables($conn);
+            if ($_SERVER['REQUEST_METHOD'] === 'POST') {
+                $action = trim((string)($_POST['action'] ?? ''));
+                $doc = trim((string)($_POST['delivery_doc_no'] ?? ''));
+                if ($action === 'pick_mark_outbound') {
+                    $code = trim((string)($_POST['customer_code'] ?? ''));
+                    if ($doc === '' || $code === '') {
+                        $error = '参数无效';
+                    } else {
+                        $to = '已出库';
+                        $up = $conn->prepare("
+                            UPDATE dispatch_waybills w
+                            LEFT JOIN dispatch_delivery_customers dc ON dc.id = w.delivery_customer_id
+                            SET w.order_status = ?, w.delivered_at = NOW()
+                            WHERE w.delivery_doc_no COLLATE utf8mb4_unicode_ci = ?
+                              AND COALESCE(w.order_status, '') = '已入库'
+                              AND (
+                                  (TRIM(COALESCE(dc.customer_code, '')) COLLATE utf8mb4_unicode_ci) = ?
+                                  OR (w.delivery_customer_id IS NULL AND (TRIM(COALESCE(w.delivery_customer_code, '')) COLLATE utf8mb4_unicode_ci) = ?)
+                              )
+                        ");
+                        if ($up) {
+                            $up->bind_param('ssss', $to, $doc, $code, $code);
+                            $up->execute();
+                            $up->close();
+                            $message = sprintf(t('dispatch.flash.customer_outbound', '客户已出库：%s'), $code);
+                            $viewDocNo = $doc;
+                        }
+                    }
+                } elseif ($action === 'pick_complete_doc') {
+                    if ($doc === '') {
+                        $error = '参数无效';
+                    } else {
+                        $this->markDispatchDeliveryDocWorkflowStep($conn, $doc, 'picking_completed_at');
+                        $message = sprintf(t('dispatch.flash.pick_complete', '拣货单已完成：%s'), $doc);
+                        $viewDocNo = '';
+                    }
+                }
+            }
+            $sql = "
+                SELECT
+                    w.delivery_doc_no,
+                    MAX(w.planned_delivery_date) AS planned_delivery_date,
+                    MIN(COALESCE(NULLIF(TRIM(dc.route_primary), ''), '')) AS sort_route_primary,
+                    MIN(COALESCE(NULLIF(TRIM(dc.route_secondary), ''), '')) AS sort_route_secondary
+                FROM dispatch_waybills w
+                LEFT JOIN dispatch_delivery_customers dc ON dc.id = w.delivery_customer_id
+                LEFT JOIN dispatch_delivery_doc_workflow wf ON (wf.delivery_doc_no COLLATE utf8mb4_unicode_ci) = (w.delivery_doc_no COLLATE utf8mb4_unicode_ci)
+                WHERE TRIM(COALESCE(w.delivery_doc_no, '')) <> ''
+                  AND COALESCE(wf.tokens_generated_at, '') <> ''
+                  AND wf.picking_completed_at IS NULL
+                GROUP BY w.delivery_doc_no
+                ORDER BY sort_route_primary ASC, sort_route_secondary ASC, MAX(w.planned_delivery_date) DESC, w.delivery_doc_no DESC
+            ";
+            $res = $conn->query($sql);
+            if ($res instanceof mysqli_result) {
+                while ($r = $res->fetch_assoc()) {
+                    $rows[] = $r;
+                }
+                $res->free();
+            }
+            if ($viewDocNo !== '') {
+                $qr = $conn->prepare("
+                    SELECT
+                        COALESCE(NULLIF(TRIM(dc.customer_code), ''), TRIM(w.delivery_customer_code)) AS customer_code,
+                        COALESCE(NULLIF(TRIM(dc.wechat_id), ''), NULLIF(TRIM(dc.line_id), ''), '') AS wx_or_line,
+                        COALESCE(NULLIF(TRIM(dc.route_primary), ''), '') AS route_primary,
+                        COALESCE(NULLIF(TRIM(dc.route_secondary), ''), '') AS route_secondary,
+                        SUM(CASE WHEN COALESCE(w.quantity, 0) > 0 THEN w.quantity ELSE 1 END) AS piece_count,
+                        SUM(CASE WHEN COALESCE(w.order_status, '') = '已出库' THEN 1 ELSE 0 END) AS outbound_rows,
+                        COUNT(*) AS total_rows
+                    FROM dispatch_waybills w
+                    LEFT JOIN dispatch_delivery_customers dc ON dc.id = w.delivery_customer_id
+                    LEFT JOIN dispatch_delivery_doc_stops st ON (st.delivery_doc_no COLLATE utf8mb4_unicode_ci) = (w.delivery_doc_no COLLATE utf8mb4_unicode_ci)
+                      AND TRIM(COALESCE(st.customer_code, '')) COLLATE utf8mb4_unicode_ci = TRIM(COALESCE(NULLIF(TRIM(dc.customer_code), ''), TRIM(w.delivery_customer_code))) COLLATE utf8mb4_unicode_ci
+                    WHERE w.delivery_doc_no COLLATE utf8mb4_unicode_ci = ?
+                    GROUP BY
+                        COALESCE(NULLIF(TRIM(dc.customer_code), ''), TRIM(w.delivery_customer_code)),
+                        COALESCE(NULLIF(TRIM(dc.wechat_id), ''), NULLIF(TRIM(dc.line_id), ''), ''),
+                        COALESCE(NULLIF(TRIM(dc.route_primary), ''), ''),
+                        COALESCE(NULLIF(TRIM(dc.route_secondary), ''), '')
+                    ORDER BY MIN(COALESCE(st.stop_order, 999999)) ASC, route_primary ASC, route_secondary ASC, customer_code ASC
+                ");
+                if ($qr) {
+                    $qr->bind_param('s', $viewDocNo);
+                    $qr->execute();
+                    $res2 = $qr->get_result();
+                    $idx = 0;
+                    while ($res2 && ($r = $res2->fetch_assoc())) {
+                        $idx++;
+                        $r['segment_no'] = (int)floor(($idx - 1) / self::DRIVER_SEGMENT_CUSTOMER_COUNT) + 1;
+                        $r['is_outbound'] = ((int)($r['outbound_rows'] ?? 0) >= (int)($r['total_rows'] ?? 0)) ? 1 : 0;
+                        $detailRows[] = $r;
+                    }
+                    $qr->close();
+                }
+            }
+        } catch (Throwable $e) {
+            $schemaReady = false;
+            $error = $e->getMessage();
+        }
+        $title = '派送业务 / 派送操作 / 派送单拣货表';
+        $contentView = __DIR__ . '/../Views/dispatch/ops_delivery_pick_sheets.php';
+        require __DIR__ . '/../Views/layouts/main.php';
+    }
+
+    public function opsDriverAssignedDocs(): void
+    {
+        if (!$this->hasAnyPermission(['menu.nav.dispatch.ops.driver', 'menu.dispatch', 'menu.dashboard'])) {
+            $this->denyNoPermission('无权限访问司机派送');
+        }
+        $conn = require __DIR__ . '/../../config/database.php';
+        $rows = [];
+        $error = '';
+        $message = '';
+        $schemaReady = true;
+        try {
+            $this->ensureDispatchSchema($conn);
+            $this->ensureDispatchOrderV2($conn);
+            $this->ensureDispatchDeliveryDocWorkflowTables($conn);
+            $userId = (int)($_SESSION['auth_user_id'] ?? 0);
+            if ($userId <= 0) {
+                throw new RuntimeException('请先登录');
+            }
+            if ($_SERVER['REQUEST_METHOD'] === 'POST' && trim((string)($_POST['action'] ?? '')) === 'driver_doc_mark_complete') {
+                $doc = trim((string)($_POST['delivery_doc_no'] ?? ''));
+                if ($doc === '') {
+                    $error = '参数无效';
+                } else {
+                    $st = $conn->prepare('
+                        UPDATE dispatch_delivery_doc_workflow
+                        SET driver_run_completed_at = NOW()
+                        WHERE delivery_doc_no = ?
+                          AND assigned_driver_user_id = ?
+                          AND driver_run_completed_at IS NULL
+                    ');
+                    if ($st) {
+                        $st->bind_param('si', $doc, $userId);
+                        $st->execute();
+                        $st->close();
+                        $message = '已标记派送完成。';
+                    }
+                }
+            }
+            if (!$this->tableExists($conn, 'dispatch_driver_run_tokens')) {
+                throw new RuntimeException('请先执行 migration：043_dispatch_driver_pod_and_tokens.sql');
+            }
+            $st = $conn->prepare("
+                SELECT
+                    t.delivery_doc_no,
+                    t.segment_index,
+                    t.token,
+                    t.expires_at,
+                    (SELECT MAX(w2.planned_delivery_date) FROM dispatch_waybills w2 WHERE (w2.delivery_doc_no COLLATE utf8mb4_unicode_ci) = (t.delivery_doc_no COLLATE utf8mb4_unicode_ci)) AS planned_delivery_date,
+                    (SELECT MIN(COALESCE(NULLIF(TRIM(dc3.route_primary), ''), '')) FROM dispatch_waybills w3 LEFT JOIN dispatch_delivery_customers dc3 ON dc3.id = w3.delivery_customer_id WHERE (w3.delivery_doc_no COLLATE utf8mb4_unicode_ci) = (t.delivery_doc_no COLLATE utf8mb4_unicode_ci)) AS sort_route_primary,
+                    (SELECT MIN(COALESCE(NULLIF(TRIM(dc3.route_secondary), ''), '')) FROM dispatch_waybills w3 LEFT JOIN dispatch_delivery_customers dc3 ON dc3.id = w3.delivery_customer_id WHERE (w3.delivery_doc_no COLLATE utf8mb4_unicode_ci) = (t.delivery_doc_no COLLATE utf8mb4_unicode_ci)) AS sort_route_secondary
+                FROM dispatch_driver_run_tokens t
+                INNER JOIN dispatch_delivery_doc_workflow wf ON (wf.delivery_doc_no COLLATE utf8mb4_unicode_ci) = (t.delivery_doc_no COLLATE utf8mb4_unicode_ci)
+                WHERE wf.assigned_driver_user_id = ?
+                  AND (wf.driver_run_completed_at IS NULL OR TRIM(COALESCE(wf.driver_run_completed_at, '')) = '')
+                ORDER BY sort_route_primary ASC, sort_route_secondary ASC, planned_delivery_date DESC, t.delivery_doc_no ASC, t.segment_index ASC
+            ");
+            if ($st) {
+                $st->bind_param('i', $userId);
+                $st->execute();
+                $res = $st->get_result();
+                while ($res && ($r = $res->fetch_assoc())) {
+                    $rows[] = $r;
+                }
+                $st->close();
+            }
+        } catch (Throwable $e) {
+            $schemaReady = false;
+            $error = $e->getMessage();
+        }
+        $title = '派送业务 / 派送操作 / 司机派送';
+        $contentView = __DIR__ . '/../Views/dispatch/driver_assigned_docs.php';
         require __DIR__ . '/../Views/layouts/main.php';
     }
 
@@ -5196,6 +7926,152 @@ class DispatchController
         if (!is_dir($dir)) {
             mkdir($dir, 0775, true);
         }
+    }
+
+    /**
+     * @return non-empty-string|null
+     */
+    private function resolveDeliveryPodSafePath(string $storedName): ?string
+    {
+        if ($storedName === '' || strpbrk($storedName, '/\\') !== false) {
+            return null;
+        }
+        $root = realpath($this->deliveryPodStorageDir());
+        if ($root === false || !is_dir($root)) {
+            return null;
+        }
+        $candidate = $root . DIRECTORY_SEPARATOR . $storedName;
+        $resolved = realpath($candidate);
+        if ($resolved === false || !is_file($resolved)) {
+            return null;
+        }
+        $rootPrefix = $root . DIRECTORY_SEPARATOR;
+        if (strncmp($resolved, $rootPrefix, strlen($rootPrefix)) !== 0) {
+            return null;
+        }
+        return $resolved;
+    }
+
+    /**
+     * 后台查看司机签收照片（需登录且具有订单列表同级权限）。
+     *
+     * 查询参数：doc=派送单号、code=派送客户编码、n=1|2（照片序号）。
+     */
+    public function deliveryPodPhoto(): void
+    {
+        $this->requireDispatchMenu();
+        if (!$this->hasAnyPermission(['menu.nav.dispatch.ops.driver', 'dispatch.waybills.view', 'dispatch.waybills.import', 'dispatch.manage'])) {
+            $this->denyNoPermission('无权限查看签收照片');
+        }
+        $fileName = trim((string)($_GET['f'] ?? ''));
+        if ($fileName !== '') {
+            $path = $this->resolveDeliveryPodSafePath($fileName);
+            if ($path === null) {
+                http_response_code(404);
+                exit;
+            }
+            $ext = strtolower((string)pathinfo($path, PATHINFO_EXTENSION));
+            $mime = 'application/octet-stream';
+            if (in_array($ext, ['jpg', 'jpeg'], true)) {
+                $mime = 'image/jpeg';
+            } elseif ($ext === 'png') {
+                $mime = 'image/png';
+            } elseif ($ext === 'webp') {
+                $mime = 'image/webp';
+            } elseif ($ext === 'gif') {
+                $mime = 'image/gif';
+            }
+            header('Content-Type: ' . $mime);
+            header('X-Content-Type-Options: nosniff');
+            readfile($path);
+            exit;
+        }
+        $doc = trim((string)($_GET['doc'] ?? ''));
+        $code = trim((string)($_GET['code'] ?? ''));
+        $n = (int)($_GET['n'] ?? 0);
+        if ($doc === '' || $code === '' || ($n !== 1 && $n !== 2)) {
+            http_response_code(400);
+            echo 'Bad request';
+            exit;
+        }
+        $conn = require __DIR__ . '/../../config/database.php';
+        $this->ensureDispatchSchema($conn);
+        if (!$this->tableExists($conn, 'dispatch_delivery_pod')) {
+            http_response_code(404);
+            exit;
+        }
+        $boundCcId = isset($_SESSION['auth_dispatch_consigning_client_id']) ? (int)$_SESSION['auth_dispatch_consigning_client_id'] : 0;
+        if ($boundCcId > 0) {
+            $chk = $conn->prepare(
+                'SELECT 1 FROM dispatch_waybills w
+                LEFT JOIN dispatch_delivery_customers dc ON dc.id = w.delivery_customer_id
+                WHERE w.delivery_doc_no COLLATE utf8mb4_unicode_ci = ?
+                  AND COALESCE(NULLIF(TRIM(dc.customer_code), \'\'), NULLIF(TRIM(w.delivery_customer_code), \'\')) = ?
+                  AND w.consigning_client_id = ?
+                LIMIT 1'
+            );
+            if (!$chk) {
+                http_response_code(500);
+                exit;
+            }
+            $chk->bind_param('ssi', $doc, $code, $boundCcId);
+        } else {
+            $chk = $conn->prepare(
+                'SELECT 1 FROM dispatch_waybills w
+                LEFT JOIN dispatch_delivery_customers dc ON dc.id = w.delivery_customer_id
+                WHERE w.delivery_doc_no COLLATE utf8mb4_unicode_ci = ?
+                  AND COALESCE(NULLIF(TRIM(dc.customer_code), \'\'), NULLIF(TRIM(w.delivery_customer_code), \'\')) = ?
+                LIMIT 1'
+            );
+            if (!$chk) {
+                http_response_code(500);
+                exit;
+            }
+            $chk->bind_param('ss', $doc, $code);
+        }
+        $chk->execute();
+        $okRow = $chk->get_result()->fetch_assoc();
+        $chk->close();
+        if (!$okRow) {
+            http_response_code(403);
+            echo 'Forbidden';
+            exit;
+        }
+        $st = $conn->prepare('SELECT photo_1, photo_2 FROM dispatch_delivery_pod WHERE delivery_doc_no = ? AND customer_code = ? LIMIT 1');
+        if (!$st) {
+            http_response_code(500);
+            exit;
+        }
+        $st->bind_param('ss', $doc, $code);
+        $st->execute();
+        $row = $st->get_result()->fetch_assoc();
+        $st->close();
+        if (!$row) {
+            http_response_code(404);
+            exit;
+        }
+        $col = $n === 1 ? 'photo_1' : 'photo_2';
+        $stored = trim((string)($row[$col] ?? ''));
+        $path = $this->resolveDeliveryPodSafePath($stored);
+        if ($path === null) {
+            http_response_code(404);
+            exit;
+        }
+        $ext = strtolower((string)pathinfo($path, PATHINFO_EXTENSION));
+        $mime = 'application/octet-stream';
+        if (in_array($ext, ['jpg', 'jpeg'], true)) {
+            $mime = 'image/jpeg';
+        } elseif ($ext === 'png') {
+            $mime = 'image/png';
+        } elseif ($ext === 'webp') {
+            $mime = 'image/webp';
+        } elseif ($ext === 'gif') {
+            $mime = 'image/gif';
+        }
+        header('Content-Type: ' . $mime);
+        header('X-Content-Type-Options: nosniff');
+        readfile($path);
+        exit;
     }
 
     /**
@@ -5228,7 +8104,7 @@ class DispatchController
                 COUNT(*) AS piece_count
             FROM dispatch_waybills w
             LEFT JOIN dispatch_delivery_customers dc ON dc.id = w.delivery_customer_id
-            WHERE w.delivery_doc_no = ?
+            WHERE w.delivery_doc_no COLLATE utf8mb4_unicode_ci = ?
             GROUP BY
                 COALESCE(NULLIF(TRIM(dc.customer_code), ''), TRIM(w.delivery_customer_code)),
                 COALESCE(NULLIF(TRIM(dc.wechat_id), ''), NULLIF(TRIM(dc.line_id), ''), ''),
@@ -5246,6 +8122,120 @@ class DispatchController
             }
             $st->close();
         }
+        return $rows;
+    }
+
+    /**
+     * 初步派送单内：按派送客户 id 聚合（用于「删除部份客户」勾选）。
+     *
+     * @return list<array<string,mixed>>
+     */
+    private function preliminaryDocBindCustomerRows(mysqli $conn, string $deliveryDocNo): array
+    {
+        $doc = trim($deliveryDocNo);
+        $rows = [];
+        if ($doc === '' || !$this->columnExists($conn, 'dispatch_waybills', 'delivery_doc_no')) {
+            return $rows;
+        }
+        $sql = "
+            SELECT
+                dc.id AS delivery_customer_id,
+                MAX(TRIM(COALESCE(dc.customer_code, ''))) AS customer_code,
+                MAX(TRIM(COALESCE(dc.wechat_id, ''))) AS wechat_id,
+                MAX(TRIM(COALESCE(dc.line_id, ''))) AS line_id,
+                MAX(TRIM(COALESCE(dc.community_name_th, ''))) AS community_name_th,
+                MAX(COALESCE(NULLIF(TRIM(dc.route_primary), ''), '')) AS route_primary,
+                MAX(COALESCE(NULLIF(TRIM(dc.route_secondary), ''), '')) AS route_secondary,
+                SUM(
+                    CASE
+                        WHEN COALESCE(w.quantity, 0) > 0 THEN w.quantity
+                        ELSE 1
+                    END
+                ) AS piece_count
+            FROM dispatch_waybills w
+            INNER JOIN dispatch_delivery_customers dc ON dc.id = w.delivery_customer_id AND dc.status = 1
+            WHERE w.delivery_doc_no COLLATE utf8mb4_unicode_ci = ?
+              AND w.delivery_customer_id IS NOT NULL
+              AND w.delivery_customer_id > 0
+            GROUP BY dc.id
+            ORDER BY route_primary ASC, route_secondary ASC, customer_code ASC
+        ";
+        $st = $conn->prepare($sql);
+        if ($st) {
+            $st->bind_param('s', $doc);
+            $st->execute();
+            $res = $st->get_result();
+            while ($res && ($r = $res->fetch_assoc())) {
+                $rows[] = $r;
+            }
+            $st->close();
+        }
+
+        return $rows;
+    }
+
+    /**
+     * 正式派送单列表「明细」：按派送单号聚合客户维度一行（与运单侧编码/客户表一致）。
+     *
+     * @return list<array<string,mixed>>
+     */
+    private function formalDeliveryDocCustomerDetailRows(mysqli $conn, string $deliveryDocNo): array
+    {
+        $doc = trim($deliveryDocNo);
+        $rows = [];
+        if ($doc === '' || !$this->columnExists($conn, 'dispatch_waybills', 'delivery_doc_no')) {
+            return $rows;
+        }
+        $hasCommEn = $this->columnExists($conn, 'dispatch_delivery_customers', 'community_name_en');
+        $hasLineId = $this->columnExists($conn, 'dispatch_delivery_customers', 'line_id');
+        $commExpr = $hasCommEn
+            ? "TRIM(CONCAT_WS(' / ', NULLIF(TRIM(COALESCE(dc.community_name_en, '')), ''), NULLIF(TRIM(COALESCE(dc.community_name_th, '')), '')))"
+            : "TRIM(COALESCE(NULLIF(TRIM(dc.community_name_th), ''), ''))";
+        $wxLineExpr = $hasLineId
+            ? "TRIM(CONCAT_WS('/', NULLIF(TRIM(COALESCE(dc.wechat_id, '')), ''), NULLIF(TRIM(COALESCE(dc.line_id, '')), '')))"
+            : "TRIM(COALESCE(NULLIF(TRIM(dc.wechat_id), ''), ''))";
+        $hasStopsTable = $this->tableExists($conn, 'dispatch_delivery_doc_stops');
+        $stopsJoin = $hasStopsTable
+            ? "LEFT JOIN dispatch_delivery_doc_stops st ON (st.delivery_doc_no COLLATE utf8mb4_unicode_ci) = (w.delivery_doc_no COLLATE utf8mb4_unicode_ci)
+                  AND TRIM(COALESCE(st.customer_code, '')) COLLATE utf8mb4_unicode_ci = TRIM(COALESCE(NULLIF(TRIM(dc.customer_code), ''), TRIM(w.delivery_customer_code))) COLLATE utf8mb4_unicode_ci"
+            : '';
+        $orderBy = $hasStopsTable
+            ? 'MIN(COALESCE(st.stop_order, 999999)) ASC, route_primary ASC, route_secondary ASC, customer_code ASC'
+            : 'route_primary ASC, route_secondary ASC, customer_code ASC';
+        $sql = "
+            SELECT
+                COALESCE(NULLIF(TRIM(dc.customer_code), ''), TRIM(w.delivery_customer_code)) AS customer_code,
+                {$wxLineExpr} AS wx_or_line,
+                {$commExpr} AS community_en_th,
+                TRIM(COALESCE(dc.addr_house_no, '')) AS addr_house_no,
+                TRIM(COALESCE(dc.addr_road_soi, '')) AS addr_road_soi,
+                COALESCE(NULLIF(TRIM(dc.route_primary), ''), '') AS route_primary,
+                COALESCE(NULLIF(TRIM(dc.route_secondary), ''), '') AS route_secondary
+            FROM dispatch_waybills w
+            LEFT JOIN dispatch_delivery_customers dc ON dc.id = w.delivery_customer_id
+            {$stopsJoin}
+            WHERE w.delivery_doc_no COLLATE utf8mb4_unicode_ci = ?
+            GROUP BY
+                COALESCE(NULLIF(TRIM(dc.customer_code), ''), TRIM(w.delivery_customer_code)),
+                {$wxLineExpr},
+                {$commExpr},
+                TRIM(COALESCE(dc.addr_house_no, '')),
+                TRIM(COALESCE(dc.addr_road_soi, '')),
+                COALESCE(NULLIF(TRIM(dc.route_primary), ''), ''),
+                COALESCE(NULLIF(TRIM(dc.route_secondary), ''), '')
+            ORDER BY {$orderBy}
+        ";
+        $st = $conn->prepare($sql);
+        if (!$st) {
+            return $rows;
+        }
+        $st->bind_param('s', $doc);
+        $st->execute();
+        $res = $st->get_result();
+        while ($res && ($r = $res->fetch_assoc())) {
+            $rows[] = $r;
+        }
+        $st->close();
         return $rows;
     }
 
@@ -5302,15 +8292,15 @@ class DispatchController
         if ($doc === '') {
             return;
         }
-        $rows = $this->deliveryDocCustomersWithGeo($conn, $doc);
-        if ($rows === []) {
-            return;
-        }
         $del = $conn->prepare('DELETE FROM dispatch_delivery_doc_stops WHERE delivery_doc_no = ?');
         if ($del) {
             $del->bind_param('s', $doc);
             $del->execute();
             $del->close();
+        }
+        $rows = $this->deliveryDocCustomersWithGeo($conn, $doc);
+        if ($rows === []) {
+            return;
         }
         $ins = $conn->prepare("
             INSERT INTO dispatch_delivery_doc_stops (
@@ -5531,20 +8521,6 @@ class DispatchController
         if ($doc === '') {
             throw new RuntimeException('派送单号无效');
         }
-        if ($this->tableExists($conn, 'dispatch_delivery_doc_stops')) {
-            $finalFlag = 0;
-            $ff = $conn->prepare('SELECT MAX(is_final) AS f FROM dispatch_delivery_doc_stops WHERE delivery_doc_no = ?');
-            if ($ff) {
-                $ff->bind_param('s', $doc);
-                $ff->execute();
-                $row = $ff->get_result()->fetch_assoc() ?: null;
-                $finalFlag = (int)($row['f'] ?? 0);
-                $ff->close();
-            }
-            if ($finalFlag !== 1) {
-                throw new RuntimeException('请先点击“发布为最终派送单”，再生成司机端链接。');
-            }
-        }
         $customers = $this->deliveryDocCustomersWithGeo($conn, $doc);
         if ($customers === []) {
             throw new RuntimeException('该派送单下没有客户明细，无法生成链接');
@@ -5653,7 +8629,7 @@ class DispatchController
                 MAX(COALESCE(NULLIF(TRIM(dc.addr_road_soi), ''), '')) AS addr_road_soi
             FROM dispatch_waybills w
             LEFT JOIN dispatch_delivery_customers dc ON dc.id = w.delivery_customer_id
-            WHERE w.delivery_doc_no = ?
+            WHERE w.delivery_doc_no COLLATE utf8mb4_unicode_ci = ?
               AND (
                   TRIM(COALESCE(dc.customer_code, '')) <> ''
                   OR TRIM(COALESCE(w.delivery_customer_code, '')) <> ''
@@ -5687,6 +8663,64 @@ class DispatchController
         return $rows;
     }
 
+    /**
+     * 解析司机 token，得到该段客户顺序、Google Maps 路线 URL、同址提示等（与签收页逻辑一致）。
+     *
+     * @return array{
+     *     tokenRow: array<string, mixed>,
+     *     segmentCustomers: list<array<string, mixed>>,
+     *     mapsUrl: ?string,
+     *     segmentTotal: int,
+     *     segmentIndex: int,
+     *     driverSameGeoBannerPrev: string,
+     *     driverSameGeoBannerNext: string,
+     *     docNo: string
+     * }|null token 无效或过期时返回 null
+     */
+    private function driverRunPrepareSegmentFromToken(mysqli $conn, string $token): ?array
+    {
+        $tokenRow = $this->driverRunResolveToken($conn, trim($token));
+        if ($tokenRow === null) {
+            return null;
+        }
+        $docNo = (string)$tokenRow['delivery_doc_no'];
+        $segmentIndex = (int)($tokenRow['segment_index'] ?? 0);
+        $all = $this->deliveryDocCustomersWithGeo($conn, $docNo);
+        $chunks = array_chunk($all, self::DRIVER_SEGMENT_CUSTOMER_COUNT);
+        $segmentTotal = count($chunks);
+        $segmentCustomers = $chunks[$segmentIndex] ?? [];
+        $segmentCustomers = $this->enrichDriverRunStopsWithDeliveryContact($conn, $docNo, $segmentCustomers);
+        $segmentCustomers = $this->applyPodBlockedFlagsForDriverSegment($conn, $docNo, $segmentCustomers);
+        $prevLast = null;
+        if ($segmentIndex > 0 && isset($chunks[$segmentIndex - 1])) {
+            $pc = $chunks[$segmentIndex - 1];
+            if ($pc !== []) {
+                $prevLast = $pc[array_key_last($pc)];
+            }
+        }
+        $nextFirst = null;
+        if ($segmentIndex + 1 < count($chunks) && isset($chunks[$segmentIndex + 1])) {
+            $nc = $chunks[$segmentIndex + 1];
+            if ($nc !== []) {
+                $nextFirst = $nc[0];
+            }
+        }
+        $geoHints = $this->driverRunEnrichSegmentWithSameGeoHints($segmentCustomers, $prevLast, $nextFirst);
+        $segmentCustomers = $geoHints['rows'];
+        $mapsUrl = $segmentCustomers === [] ? null : $this->buildGoogleMapsDirUrlForSegment($segmentCustomers);
+
+        return [
+            'tokenRow' => $tokenRow,
+            'segmentCustomers' => $segmentCustomers,
+            'mapsUrl' => $mapsUrl,
+            'segmentTotal' => $segmentTotal,
+            'segmentIndex' => $segmentIndex,
+            'driverSameGeoBannerPrev' => (string)($geoHints['cross_prev'] ?? ''),
+            'driverSameGeoBannerNext' => (string)($geoHints['cross_next'] ?? ''),
+            'docNo' => $docNo,
+        ];
+    }
+
     /** 司机端（免登录 token，界面文案当前为中文），单页：清单 + Google 地图 + 每客户两张签收照 */
     public function opsDriverRun(): void
     {
@@ -5701,26 +8735,27 @@ class DispatchController
         $segmentTotal = 0;
         $segmentIndex = 0;
         $podDoneCodes = [];
+        $driverSameGeoBannerPrev = '';
+        $driverSameGeoBannerNext = '';
         try {
             $this->ensureDispatchSchema($conn);
             if (!$this->columnExists($conn, 'dispatch_waybills', 'delivery_doc_no')) {
                 throw new RuntimeException('派送单字段未建立');
             }
-            $tokenRow = $this->driverRunResolveToken($conn, $token);
-            if ($tokenRow === null) {
+            $prep = $this->driverRunPrepareSegmentFromToken($conn, $token);
+            if ($prep === null) {
                 $driverError = 'invalid';
             } else {
-                $docNo = (string)$tokenRow['delivery_doc_no'];
-                $segmentIndex = (int)($tokenRow['segment_index'] ?? 0);
-                $all = $this->deliveryDocCustomersWithGeo($conn, $docNo);
-                $chunks = array_chunk($all, self::DRIVER_SEGMENT_CUSTOMER_COUNT);
-                $segmentTotal = count($chunks);
-                $segmentCustomers = $chunks[$segmentIndex] ?? [];
-                $segmentCustomers = $this->enrichDriverRunStopsWithDeliveryContact($conn, $docNo, $segmentCustomers);
+                $tokenRow = $prep['tokenRow'];
+                $segmentCustomers = $prep['segmentCustomers'];
+                $mapsUrl = $prep['mapsUrl'];
+                $segmentTotal = $prep['segmentTotal'];
+                $segmentIndex = $prep['segmentIndex'];
+                $driverSameGeoBannerPrev = $prep['driverSameGeoBannerPrev'];
+                $driverSameGeoBannerNext = $prep['driverSameGeoBannerNext'];
+                $docNo = $prep['docNo'];
                 if ($segmentCustomers === []) {
                     $driverError = 'empty';
-                } else {
-                    $mapsUrl = $this->buildGoogleMapsDirUrlForSegment($segmentCustomers);
                 }
                 $dm = $conn->prepare('SELECT dispatch_line, planned_delivery_date FROM dispatch_waybills WHERE delivery_doc_no = ? LIMIT 1');
                 if ($dm) {
@@ -5757,6 +8792,86 @@ class DispatchController
         require __DIR__ . '/../Views/dispatch/driver_run_standalone.php';
     }
 
+    /**
+     * 列表「分段」按钮：302 到 Google Maps 驾车路线（与签收页地图链接一致）；无法建链时回退到签收页。
+     * 免登录，与 /dispatch/driver/run 相同 token 规则。
+     */
+    public function opsDriverSegmentMapsRedirect(): void
+    {
+        $token = trim((string)($_GET['t'] ?? ''));
+        $fallback = '/dispatch/driver/run' . ($token !== '' ? ('?t=' . rawurlencode($token)) : '');
+        try {
+            $conn = require __DIR__ . '/../../config/database.php';
+            $this->ensureDispatchSchema($conn);
+            if (!$this->columnExists($conn, 'dispatch_waybills', 'delivery_doc_no')) {
+                throw new RuntimeException('派送单字段未建立');
+            }
+            $prep = $this->driverRunPrepareSegmentFromToken($conn, $token);
+            if ($prep !== null) {
+                $mapsUrl = $prep['mapsUrl'];
+                if ($mapsUrl !== null && $mapsUrl !== '') {
+                    header('Location: ' . $mapsUrl, true, 302);
+                    exit;
+                }
+            }
+        } catch (Throwable $e) {
+            // 回退签收页
+        }
+        header('Location: ' . $fallback, true, 302);
+        exit;
+    }
+
+    /** 司机端 GET：提交签收前拉取是否已禁传（客户异常/暂停），供前端先刷新再提交 */
+    public function opsDriverPodPrecheck(): void
+    {
+        header('Content-Type: application/json; charset=utf-8');
+        if (($_SERVER['REQUEST_METHOD'] ?? 'GET') !== 'GET') {
+            http_response_code(405);
+            echo json_encode(['ok' => false, 'blocked' => false], JSON_UNESCAPED_UNICODE);
+            exit;
+        }
+        $token = trim((string)($_GET['t'] ?? ''));
+        $customerCode = trim((string)($_GET['customer_code'] ?? ''));
+        if ($token === '' || $customerCode === '') {
+            echo json_encode(['ok' => false, 'blocked' => false, 'error' => 'bad_param'], JSON_UNESCAPED_UNICODE);
+            exit;
+        }
+        try {
+            $conn = require __DIR__ . '/../../config/database.php';
+            $this->ensureDispatchSchema($conn);
+            if (!$this->columnExists($conn, 'dispatch_waybills', 'delivery_doc_no')) {
+                echo json_encode(['ok' => true, 'blocked' => false], JSON_UNESCAPED_UNICODE);
+                exit;
+            }
+            $tokenRow = $this->driverRunResolveToken($conn, $token);
+            if ($tokenRow === null) {
+                echo json_encode(['ok' => true, 'blocked' => true, 'reason' => 'invalid_token'], JSON_UNESCAPED_UNICODE);
+                exit;
+            }
+            $docNo = (string)$tokenRow['delivery_doc_no'];
+            $segmentIndex = (int)($tokenRow['segment_index'] ?? 0);
+            $all = $this->deliveryDocCustomersWithGeo($conn, $docNo);
+            $chunks = array_chunk($all, self::DRIVER_SEGMENT_CUSTOMER_COUNT);
+            $segmentCustomers = $chunks[$segmentIndex] ?? [];
+            $allowed = false;
+            foreach ($segmentCustomers as $r) {
+                if (trim((string)($r['customer_code'] ?? '')) === $customerCode) {
+                    $allowed = true;
+                    break;
+                }
+            }
+            if (!$allowed) {
+                echo json_encode(['ok' => true, 'blocked' => false, 'error' => 'not_in_segment'], JSON_UNESCAPED_UNICODE);
+                exit;
+            }
+            $blocked = $this->driverRunIsPodUploadBlockedForCustomer($conn, $docNo, $customerCode);
+            echo json_encode(['ok' => true, 'blocked' => $blocked], JSON_UNESCAPED_UNICODE);
+        } catch (Throwable $e) {
+            echo json_encode(['ok' => false, 'blocked' => true, 'error' => 'server'], JSON_UNESCAPED_UNICODE);
+        }
+        exit;
+    }
+
     public function opsDriverPodUpload(): void
     {
         if ($_SERVER['REQUEST_METHOD'] !== 'POST') {
@@ -5773,6 +8888,7 @@ class DispatchController
             echo 'Bad request';
             exit;
         }
+        $this->ensureDispatchWaybillDeliveryDriverName($conn);
         $tokenRow = $this->driverRunResolveToken($conn, $token);
         if ($tokenRow === null) {
             http_response_code(403);
@@ -5794,6 +8910,11 @@ class DispatchController
         if (!$allowed) {
             http_response_code(403);
             echo 'Forbidden';
+            exit;
+        }
+        if ($this->driverRunIsPodUploadBlockedForCustomer($conn, $docNo, $customerCode)) {
+            http_response_code(403);
+            echo '该客户已标记为异常或暂停，不可上传签收照片';
             exit;
         }
         $base = 'pod_' . preg_replace('/[^a-zA-Z0-9_-]/', '_', $docNo) . '_' . preg_replace('/[^a-zA-Z0-9_-]/', '_', $customerCode);
@@ -5818,12 +8939,32 @@ class DispatchController
         $st->execute();
         $st->close();
 
+        $driverName = '';
+        if ($this->tableExists($conn, 'dispatch_delivery_doc_workflow')) {
+            $sd = $conn->prepare('
+                SELECT u.full_name
+                FROM dispatch_delivery_doc_workflow wf
+                LEFT JOIN users u ON u.id = wf.assigned_driver_user_id
+                WHERE wf.delivery_doc_no = ?
+                LIMIT 1
+            ');
+            if ($sd) {
+                $sd->bind_param('s', $docNo);
+                $sd->execute();
+                $dr = $sd->get_result()->fetch_assoc() ?: null;
+                $sd->close();
+                if (is_array($dr) && trim((string)($dr['full_name'] ?? '')) !== '') {
+                    $driverName = trim((string)$dr['full_name']);
+                }
+            }
+        }
+
         // 上传签收后：该客户在本派送单下所有“已出库”订单同步改为“已派送”
         $toStatus = '已派送';
         $fromStatus = '已出库';
         $up = $conn->prepare("
             UPDATE dispatch_waybills
-            SET order_status = ?, delivered_at = NOW()
+            SET order_status = ?, delivered_at = NOW(), delivery_driver_name = ?
             WHERE delivery_doc_no = ?
               AND COALESCE(order_status, '') = ?
               AND (
@@ -5837,7 +8978,7 @@ class DispatchController
               )
         ");
         if ($up) {
-            $up->bind_param('sssss', $toStatus, $docNo, $fromStatus, $customerCode, $customerCode);
+            $up->bind_param('ssssss', $toStatus, $driverName, $docNo, $fromStatus, $customerCode, $customerCode);
             $up->execute();
             $up->close();
         }

@@ -21,15 +21,13 @@
 </style>
 
 <div class="card">
-    <h2 style="margin:0 0 8px 0;">UDA快件 / 快件收发 / 转发合包</h2>
-    <div class="muted">版面与操作比照「派送业务 / 转发操作 / 转发合包」；待合包数据由「快件查询」手动推送；派送客户下拉取自常用收件人。下方列表可勾选要纳入本单的快件；也可不勾选任何项直接提交（仅保存合包，不含快件明细）。</div>
+    <h2 style="margin:0 0 8px 0;"><?php echo htmlspecialchars(t('uda.page.express_forward_packages.title', 'UDA快件 / 快件收发 / 转发合包')); ?></h2>
+    <div class="muted"><?php echo htmlspecialchars(t('uda.page.express_forward_packages.subtitle', '版面与操作比照「派送业务 / 转发操作 / 转发合包」；待合包数据由「快件查询」手动推送；派送客户下拉取自常用收件人。下方列表可勾选要纳入本单的快件；也可不勾选任何项直接提交（仅保存合包，不含快件明细）。')); ?></div>
 </div>
 
 <?php if (!$schemaReady): ?>
     <div class="card" style="border-left:4px solid #dc2626;">
-        UDA 转发合包相关表未就绪，请先执行：
-        <code>database/migrations/034_uda_express_forward_packages.sql</code>（若尚未执行）、
-        <code>database/migrations/035_uda_saved_recipients_and_forward_packages.sql</code>
+        <?php echo t('uda.page.express_forward_packages.schema_block', 'UDA 转发合包相关表未就绪，请先执行：<code>database/migrations/034_uda_express_forward_packages.sql</code>（若尚未执行）、<code>database/migrations/035_uda_saved_recipients_and_forward_packages.sql</code>'); ?>
     </div>
     <?php return; ?>
 <?php endif; ?>
@@ -43,25 +41,25 @@
 
 <form method="post" id="udaForwardPkgForm" enctype="multipart/form-data">
 <div class="card">
-    <h3 style="margin-top:0;">新增转发合包</h3>
+    <h3 style="margin-top:0;"><?php echo htmlspecialchars(t('uda.page.express_forward_packages.section_new', '新增转发合包')); ?></h3>
     <div class="fwd-grid">
         <input type="hidden" name="post_action" value="uda_forward_create_package">
         <div>
-            <label>转发单号（必填）</label>
+            <label><?php echo htmlspecialchars(t('uda.page.express_forward_packages.label_pkg_no', '转发单号（必填）')); ?></label>
             <input class="fwd-input" type="text" name="package_no" required>
         </div>
         <div>
-            <label>发出时间（必填）</label>
+            <label><?php echo htmlspecialchars(t('uda.page.express_forward_packages.label_send_at', '发出时间（必填）')); ?></label>
             <input class="fwd-input" type="datetime-local" name="send_at" id="uda_fwd_send_at" step="1" required>
         </div>
         <div>
-            <label>转发费用（必填）</label>
+            <label><?php echo htmlspecialchars(t('uda.page.express_forward_packages.label_fee', '转发费用（必填）')); ?></label>
             <input class="fwd-input" type="number" name="forward_fee" step="0.01" min="0" inputmode="decimal" placeholder="0.00" required>
         </div>
         <div>
-            <label>派送客户（常用收件人）</label>
+            <label><?php echo htmlspecialchars(t('uda.page.express_forward_packages.label_saved_recipient', '派送客户（常用收件人）')); ?></label>
             <select class="fwd-select" name="saved_recipient_id" id="uda_fwd_recipient_select">
-                <option value="">不选（手填下方收件信息）</option>
+                <option value=""><?php echo htmlspecialchars(t('uda.page.express_forward_packages.opt_no_recipient', '不选（手填下方收件信息）')); ?></option>
                 <?php foreach (($savedRecipientOptions ?? []) as $c): ?>
                     <?php $rid = (int)($c['id'] ?? 0); ?>
                     <option
@@ -74,28 +72,28 @@
             </select>
         </div>
         <div>
-            <label>收件人（必填）</label>
+            <label><?php echo htmlspecialchars(t('uda.page.express_forward_packages.label_receiver', '收件人（必填）')); ?></label>
             <input class="fwd-input" type="text" name="receiver_name" id="uda_fwd_receiver_name" required>
         </div>
         <div>
-            <label>收件电话（必填）</label>
+            <label><?php echo htmlspecialchars(t('uda.page.express_forward_packages.label_receiver_phone', '收件电话（必填）')); ?></label>
             <input class="fwd-input" type="text" name="receiver_phone" id="uda_fwd_receiver_phone" required>
         </div>
         <div class="full" style="display:flex;flex-wrap:wrap;gap:10px;align-items:flex-end;">
             <div style="flex:1;min-width:220px;">
-                <label>凭证上传（必填）</label>
+                <label><?php echo htmlspecialchars(t('uda.page.express_forward_packages.label_voucher', '凭证上传（必填）')); ?></label>
                 <input class="fwd-input" type="file" name="voucher_image" accept="image/jpeg,image/png,image/gif,image/webp" required>
             </div>
             <div>
-                <button type="button" class="btn" id="uda_recipient_modal_open">录入常用收件人</button>
+                <button type="button" class="btn" id="uda_recipient_modal_open"><?php echo htmlspecialchars(t('uda.page.express_forward_packages.btn_save_recipient', '录入常用收件人')); ?></button>
             </div>
         </div>
         <div class="full">
-            <label>收件地址（必填）</label>
+            <label><?php echo htmlspecialchars(t('uda.page.express_forward_packages.label_address', '收件地址（必填）')); ?></label>
             <textarea class="fwd-textarea" name="receiver_address" id="uda_fwd_receiver_address" required></textarea>
         </div>
         <div class="full">
-            <label>备注</label>
+            <label><?php echo htmlspecialchars(t('uda.page.express_forward_packages.label_remark', '备注')); ?></label>
             <textarea class="fwd-textarea" name="remark"></textarea>
         </div>
     </div>
@@ -103,20 +101,20 @@
 </form>
 
 <div class="card">
-    <h3 style="margin-top:0;">待合包快件（由快件查询「转」推送）</h3>
+    <h3 style="margin-top:0;"><?php echo htmlspecialchars(t('uda.page.express_forward_packages.section_queue', '待合包快件（由快件查询「转」推送）')); ?></h3>
     <div class="table-wrap">
         <table class="data-table">
             <thead>
                 <tr>
-                    <th style="width:44px;">选</th>
-                    <th>面单号</th>
-                    <th>收件人</th>
-                    <th style="width:100px;">操作</th>
+                    <th style="width:44px;"><?php echo htmlspecialchars(t('uda.page.express_forward_packages.th_pick', '选')); ?></th>
+                    <th><?php echo htmlspecialchars(t('uda.page.express_forward_packages.th_tracking', '面单号')); ?></th>
+                    <th><?php echo htmlspecialchars(t('uda.page.express_forward_packages.th_receiver', '收件人')); ?></th>
+                    <th style="width:100px;"><?php echo htmlspecialchars(t('uda.page.express_forward_packages.th_op', '操作')); ?></th>
                 </tr>
             </thead>
             <tbody>
             <?php if (empty($queueRows)): ?>
-                <tr><td colspan="4" class="muted">暂无待合包数据</td></tr>
+                <tr><td colspan="4" class="muted"><?php echo htmlspecialchars(t('uda.page.express_forward_packages.empty_queue', '暂无待合包数据')); ?></td></tr>
             <?php else: ?>
                 <?php foreach ($queueRows as $qr): ?>
                     <tr>
@@ -126,10 +124,10 @@
                         <td class="cell-tip"><?php echo html_cell_tip_content((string)($qr['tracking_no'] ?? '')); ?></td>
                         <td class="cell-tip"><?php echo html_cell_tip_content((string)($qr['receiver_display'] ?? '')); ?></td>
                         <td>
-                            <form method="post" style="margin:0;" onsubmit="return confirm('确定从列表移除并取消再发出？');">
+                            <form method="post" style="margin:0;" onsubmit="return confirm((window.__udaFwdPkgI18n || {}).confirmReturn || '');">
                                 <input type="hidden" name="post_action" value="uda_return_queue">
                                 <input type="hidden" name="queue_id" value="<?php echo (int)($qr['queue_id'] ?? 0); ?>">
-                                <button type="submit" style="padding:4px 10px;min-height:auto;">返</button>
+                                <button type="submit" style="padding:4px 10px;min-height:auto;"><?php echo htmlspecialchars(t('uda.page.express_forward_packages.btn_return_queue', '返')); ?></button>
                             </form>
                         </td>
                     </tr>
@@ -139,43 +137,43 @@
         </table>
     </div>
     <div class="inline-actions" style="margin-top:12px;">
-        <button type="submit" form="udaForwardPkgForm">转发确认</button>
+        <button type="submit" form="udaForwardPkgForm"><?php echo htmlspecialchars(t('uda.page.express_forward_packages.btn_submit', '转发确认')); ?></button>
     </div>
 </div>
 
 <div id="udaRecipientModal" style="display:none;position:fixed;inset:0;background:rgba(0,0,0,.35);z-index:10050;align-items:center;justify-content:center;padding:12px;">
     <div style="position:relative;max-width:720px;width:100%;max-height:92vh;overflow:auto;background:#fff;border-radius:12px;padding:16px 18px;box-shadow:0 10px 28px rgba(0,0,0,.2);">
-        <button type="button" class="fwd-modal-close-x" id="udaRecipientModalClose" aria-label="关闭">×</button>
-        <h3 style="margin:0 0 12px 0;">录入常用收件人</h3>
+        <button type="button" class="fwd-modal-close-x" id="udaRecipientModalClose" aria-label="<?php echo htmlspecialchars(t('uda.page.express_forward_packages.aria_close_modal', '关闭')); ?>">×</button>
+        <h3 style="margin:0 0 12px 0;"><?php echo htmlspecialchars(t('uda.page.express_forward_packages.modal_title', '录入常用收件人')); ?></h3>
         <form method="post" class="fwd-grid" style="grid-template-columns:1fr 1fr; margin-bottom:16px;">
             <input type="hidden" name="post_action" value="uda_recipient_save">
             <input type="hidden" name="recipient_edit_id" id="uda_recipient_edit_id" value="">
             <div class="full">
-                <label>收件人</label>
+                <label><?php echo htmlspecialchars(t('uda.page.express_forward_packages.modal_recipient', '收件人')); ?></label>
                 <input class="fwd-input" type="text" name="recipient_name" id="uda_modal_recipient_name" required>
             </div>
             <div>
-                <label>电话</label>
+                <label><?php echo htmlspecialchars(t('uda.page.express_forward_packages.modal_phone', '电话')); ?></label>
                 <input class="fwd-input" type="text" name="recipient_phone" id="uda_modal_recipient_phone" required>
             </div>
             <div class="full">
-                <label>地址</label>
+                <label><?php echo htmlspecialchars(t('uda.page.express_forward_packages.modal_address', '地址')); ?></label>
                 <textarea class="fwd-textarea" name="recipient_address" id="uda_modal_recipient_address" rows="3" required></textarea>
             </div>
             <div class="full inline-actions">
-                <button type="submit">保存</button>
-                <button type="button" class="btn" id="uda_recipient_form_reset">清空新增</button>
+                <button type="submit"><?php echo htmlspecialchars(t('uda.page.express_forward_packages.modal_save', '保存')); ?></button>
+                <button type="button" class="btn" id="uda_recipient_form_reset"><?php echo htmlspecialchars(t('uda.page.express_forward_packages.modal_reset', '清空新增')); ?></button>
             </div>
         </form>
-        <h4 style="margin:0 0 8px 0;">常用列表</h4>
+        <h4 style="margin:0 0 8px 0;"><?php echo htmlspecialchars(t('uda.page.express_forward_packages.saved_list', '常用列表')); ?></h4>
         <div class="table-wrap">
             <table class="data-table">
                 <thead>
-                    <tr><th>收件人</th><th>电话</th><th>地址</th><th style="width:120px;">操作</th></tr>
+                    <tr><th><?php echo htmlspecialchars(t('uda.page.express_forward_packages.th_saved_name', '收件人')); ?></th><th><?php echo htmlspecialchars(t('uda.page.express_forward_packages.th_saved_phone', '电话')); ?></th><th><?php echo htmlspecialchars(t('uda.page.express_forward_packages.th_saved_addr', '地址')); ?></th><th style="width:120px;"><?php echo htmlspecialchars(t('uda.page.express_forward_packages.th_saved_op', '操作')); ?></th></tr>
                 </thead>
                 <tbody>
                 <?php if (empty($recipientRows)): ?>
-                    <tr><td colspan="4" class="muted">暂无常用收件人</td></tr>
+                    <tr><td colspan="4" class="muted"><?php echo htmlspecialchars(t('uda.page.express_forward_packages.empty_saved', '暂无常用收件人')); ?></td></tr>
                 <?php else: ?>
                     <?php foreach ($recipientRows as $rr): ?>
                         <tr>
@@ -188,11 +186,11 @@
                                     data-name="<?php echo htmlspecialchars((string)($rr['recipient_name'] ?? ''), ENT_QUOTES); ?>"
                                     data-phone="<?php echo htmlspecialchars((string)($rr['phone'] ?? ''), ENT_QUOTES); ?>"
                                     data-address="<?php echo htmlspecialchars((string)($rr['address'] ?? ''), ENT_QUOTES); ?>"
-                                >改</button>
-                                <form method="post" style="display:inline;margin:0;" onsubmit="return confirm('确定删除？');">
+                                ><?php echo htmlspecialchars(t('uda.page.express_forward_packages.btn_edit_short', '改')); ?></button>
+                                <form method="post" style="display:inline;margin:0;" onsubmit="return confirm((window.__udaFwdPkgI18n || {}).confirmDelSaved || '');">
                                     <input type="hidden" name="post_action" value="uda_recipient_delete">
                                     <input type="hidden" name="recipient_id" value="<?php echo (int)($rr['id'] ?? 0); ?>">
-                                    <button type="submit" style="padding:2px 8px;min-height:auto;">删</button>
+                                    <button type="submit" style="padding:2px 8px;min-height:auto;"><?php echo htmlspecialchars(t('uda.page.express_forward_packages.btn_del_short', '删')); ?></button>
                                 </form>
                             </td>
                         </tr>
@@ -204,6 +202,10 @@
     </div>
 </div>
 
+<script>window.__udaFwdPkgI18n=<?php echo json_encode([
+    'confirmReturn' => t('uda.page.express_forward_packages.confirm_return', '确定从列表移除并取消再发出？'),
+    'confirmDelSaved' => t('uda.page.express_forward_packages.confirm_del_saved', '确定删除？'),
+], JSON_UNESCAPED_UNICODE); ?>;</script>
 <script>
 document.addEventListener('DOMContentLoaded', function () {
     var sendAtInput = document.getElementById('uda_fwd_send_at');

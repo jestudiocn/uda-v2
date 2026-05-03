@@ -59,7 +59,8 @@
 <?php endif; ?>
 
 <div class="card">
-    <div style="display:grid;grid-template-columns:repeat(7,minmax(120px,1fr));gap:6px;">
+    <div class="ud-calendar-month-scroll">
+    <div class="dashboard-month-grid" style="display:grid;grid-template-columns:repeat(7,minmax(120px,1fr));gap:6px;">
         <?php
         $weekLabels = [
             t('dashboard.week.1', '一'),
@@ -108,7 +109,9 @@
                                     $bd = '#86efac';
                                 }
                                 $eventType = (string)($ev['event_type'] ?? 'reminder');
-                                $eventTypeLabel = $eventType === 'meeting' ? '会议' : ($eventType === 'todo' ? '待办' : '提醒');
+                                $eventTypeLabel = $eventType === 'meeting'
+                                    ? t('calendar.type.meeting', '会议')
+                                    : ($eventType === 'todo' ? t('calendar.type.todo', '待办') : t('calendar.type.reminder', '提醒'));
                             ?>
                             <button
                                 type="button"
@@ -133,25 +136,26 @@
             <?php endif; ?>
         <?php endforeach; ?>
     </div>
+    </div>
 </div>
 
 <div id="pendingTodoPopup" style="display:none;position:fixed;inset:0;background:rgba(0,0,0,.35);z-index:10020;">
     <div style="width:min(720px,92vw);max-height:78vh;overflow:auto;margin:10vh auto;background:#fff;border-radius:14px;box-shadow:0 10px 30px rgba(0,0,0,.22);padding:16px 18px;">
-        <h3 style="margin:0 0 8px 0;">待处理事项提醒</h3>
-        <div class="muted" style="margin-bottom:10px;">以下为你本人创建或被指派、尚未完成的事项。</div>
+        <h3 style="margin:0 0 8px 0;"><?php echo htmlspecialchars(t('dashboard.pending.popup_title', '待处理事项提醒')); ?></h3>
+        <div class="muted" style="margin-bottom:10px;"><?php echo htmlspecialchars(t('dashboard.pending.popup_intro', '以下为你本人创建或被指派、尚未完成的事项。')); ?></div>
         <?php if (empty($pendingTodoItems)): ?>
             <div class="card" style="margin:0;padding:12px;background:#f8fafc;">
-                太棒了，目前没有未完成事项。
+                <?php echo htmlspecialchars(t('dashboard.pending.empty', '太棒了，目前没有未完成事项。')); ?>
             </div>
         <?php else: ?>
-            <div style="overflow:auto;max-height:46vh;border:1px solid #e5e7eb;border-radius:10px;">
+            <div class="ud-table-scroll" style="max-height:46vh;border:1px solid #e5e7eb;border-radius:10px;">
                 <table class="data-table">
                     <thead>
                     <tr>
-                        <th>状态</th>
-                        <th>事项标题</th>
-                        <th>日期</th>
-                        <th>进度</th>
+                        <th><?php echo htmlspecialchars(t('dashboard.pending.table.status', '状态')); ?></th>
+                        <th><?php echo htmlspecialchars(t('dashboard.pending.table.title', '事项标题')); ?></th>
+                        <th><?php echo htmlspecialchars(t('dashboard.pending.table.date', '日期')); ?></th>
+                        <th><?php echo htmlspecialchars(t('dashboard.pending.table.progress', '进度')); ?></th>
                     </tr>
                     </thead>
                     <tbody>
@@ -173,8 +177,8 @@
             </div>
         <?php endif; ?>
         <div style="display:flex;justify-content:flex-end;gap:8px;margin-top:12px;">
-            <button type="button" id="pendingPopupCloseBtn" class="btn" style="background:#64748b;">稍后处理</button>
-            <button type="button" id="pendingPopupGotoBtn" class="btn">前往处理事项</button>
+            <button type="button" id="pendingPopupCloseBtn" class="btn" style="background:#64748b;"><?php echo htmlspecialchars(t('dashboard.pending.btn_later', '稍后处理')); ?></button>
+            <button type="button" id="pendingPopupGotoBtn" class="btn"><?php echo htmlspecialchars(t('dashboard.pending.btn_go', '前往处理事项')); ?></button>
         </div>
     </div>
 </div>
@@ -182,39 +186,40 @@
 <div id="eventDetailModal" style="display:none;position:fixed;inset:0;background:rgba(0,0,0,.35);z-index:9999;align-items:center;justify-content:center;padding:12px;">
     <div class="modal-inner" style="position:relative;max-width:620px;width:100%;max-height:92vh;overflow:auto;background:#fff;border-radius:12px;padding:16px 18px;box-shadow:0 10px 28px rgba(0,0,0,.2);">
         <button type="button" id="closeEventDetailModalX" style="position:absolute;top:10px;right:12px;border:none;background:transparent;font-size:26px;line-height:1;color:#64748b;cursor:pointer;padding:0 4px;">×</button>
-        <h3 style="margin:0 0 10px 0;">事件详情</h3>
+        <h3 style="margin:0 0 10px 0;"><?php echo htmlspecialchars(t('calendar.modal.title', '事件详情')); ?></h3>
         <div style="display:grid;grid-template-columns:110px 1fr;row-gap:8px;">
-            <div class="muted">标题</div><div id="detailTitle"></div>
-            <div class="muted">类型</div><div id="detailType"></div>
-            <div class="muted">日期</div><div id="detailDateRange"></div>
-            <div class="muted">创建人</div><div id="detailCreator"></div>
-            <div class="muted">指派成员</div><div id="detailAssignees"></div>
-            <div class="muted">备注</div><div id="detailNote" style="white-space:pre-wrap;"></div>
+            <div class="muted"><?php echo htmlspecialchars(t('calendar.modal.label.title', '标题')); ?></div><div id="detailTitle"></div>
+            <div class="muted"><?php echo htmlspecialchars(t('calendar.modal.label.type', '类型')); ?></div><div id="detailType"></div>
+            <div class="muted"><?php echo htmlspecialchars(t('calendar.modal.label.date', '日期')); ?></div><div id="detailDateRange"></div>
+            <div class="muted"><?php echo htmlspecialchars(t('calendar.modal.label.creator', '创建人')); ?></div><div id="detailCreator"></div>
+            <div class="muted"><?php echo htmlspecialchars(t('calendar.modal.label.assignees', '指派成员')); ?></div><div id="detailAssignees"></div>
+            <div class="muted"><?php echo htmlspecialchars(t('calendar.modal.label.note', '备注')); ?></div><div id="detailNote" style="white-space:pre-wrap;"></div>
         </div>
         <form method="post" action="/calendar/event-status" style="margin-top:12px;border-top:1px solid #e5e7eb;padding-top:12px;">
             <input type="hidden" name="event_id" id="detailEventId">
             <input type="hidden" name="redirect" value="<?php echo htmlspecialchars($_SERVER['REQUEST_URI'] ?? '/'); ?>">
             <div style="display:grid;grid-template-columns:110px 1fr;align-items:center;row-gap:8px;">
-                <label for="detailProgress" class="muted">进度 (%)</label>
+                <label for="detailProgress" class="muted"><?php echo htmlspecialchars(t('calendar.modal.progress_label', '进度 (%)')); ?></label>
                 <input id="detailProgress" type="number" name="progress_percent" min="0" max="100" step="1" required>
-                <label for="detailCompleted" class="muted">完成状态</label>
+                <label for="detailCompleted" class="muted"><?php echo htmlspecialchars(t('calendar.modal.completed_status', '完成状态')); ?></label>
                 <label style="display:flex;align-items:center;gap:6px;font-weight:500;">
                     <input id="detailCompleted" type="checkbox" name="is_completed" value="1">
-                    <span>标记为已完成</span>
+                    <span><?php echo htmlspecialchars(t('calendar.modal.mark_completed', '标记为已完成')); ?></span>
                 </label>
             </div>
             <div style="display:flex;justify-content:flex-end;gap:8px;margin-top:14px;">
-                <button type="button" class="btn" id="closeEventDetailModal" style="background:#64748b;">关闭</button>
-                <button type="submit" class="btn">保存状态</button>
+                <button type="button" class="btn" id="closeEventDetailModal" style="background:#64748b;"><?php echo htmlspecialchars(t('calendar.modal.close', '关闭')); ?></button>
+                <button type="submit" class="btn"><?php echo htmlspecialchars(t('calendar.modal.save_status', '保存状态')); ?></button>
             </div>
         </form>
         <div style="margin-top:12px;border-top:1px solid #e5e7eb;padding-top:12px;">
-            <div style="font-weight:700;margin-bottom:6px;">状态变更记录</div>
-            <div id="detailStatusLogs" class="muted">加载中...</div>
+            <div style="font-weight:700;margin-bottom:6px;"><?php echo htmlspecialchars(t('calendar.modal.logs_title', '状态变更记录')); ?></div>
+            <div id="detailStatusLogs" class="muted"><?php echo htmlspecialchars(t('calendar.js.loading', '加载中...')); ?></div>
         </div>
     </div>
 </div>
 
+<?php require __DIR__ . '/../partials/calendar_js_i18n.php'; ?>
 <script>
 document.addEventListener('DOMContentLoaded', function () {
     const modal = document.getElementById('eventDetailModal');
@@ -225,22 +230,26 @@ document.addEventListener('DOMContentLoaded', function () {
         if (el) el.textContent = val || '';
     };
     const logsBox = document.getElementById('detailStatusLogs');
+    const I = window.__calendarJsI18n || {};
 
     const renderLogs = function (logs) {
         if (!logsBox) return;
         if (!logs || logs.length === 0) {
-            logsBox.innerHTML = '<div class="muted">暂无状态变更记录</div>';
+            logsBox.innerHTML = '<div class="muted">' + (I.logEmpty || '') + '</div>';
             return;
         }
         const html = logs.map(function (log) {
             const who = log.changed_by_name || '-';
             const when = log.created_at || '';
-            const oldDone = Number(log.old_is_completed) === 1 ? '已完成' : '未完成';
-            const newDone = Number(log.new_is_completed) === 1 ? '已完成' : '未完成';
+            const oldDone = Number(log.old_is_completed) === 1 ? (I.statusDone || '') : (I.statusUndone || '');
+            const newDone = Number(log.new_is_completed) === 1 ? (I.statusDone || '') : (I.statusUndone || '');
+            const pw = I.progressWord || '';
+            const sw = I.statusWord || '';
+            const ar = I.arrow || '→';
             return '<div style="padding:6px 0;border-bottom:1px dashed #e5e7eb;">'
-                + '<div style="font-size:12px;color:#6b7280;">用户：' + who + '</div>'
-                + '<div style="font-size:12px;color:#6b7280;">时间：' + when + '</div>'
-                + '<div style="font-size:13px;">进度 ' + Number(log.old_progress_percent) + '% → ' + Number(log.new_progress_percent) + '%，状态 ' + oldDone + ' → ' + newDone + '</div>'
+                + '<div style="font-size:12px;color:#6b7280;">' + (I.userLabel || '') + '：' + who + '</div>'
+                + '<div style="font-size:12px;color:#6b7280;">' + (I.timeLabel || '') + '：' + when + '</div>'
+                + '<div style="font-size:13px;">' + pw + ' ' + Number(log.old_progress_percent) + '% ' + ar + ' ' + Number(log.new_progress_percent) + '%，' + sw + ' ' + oldDone + ' ' + ar + ' ' + newDone + '</div>'
                 + '</div>';
         }).join('');
         logsBox.innerHTML = html;
@@ -248,7 +257,7 @@ document.addEventListener('DOMContentLoaded', function () {
 
     const loadLogs = function (eventId) {
         if (!logsBox) return;
-        logsBox.innerHTML = '<div class="muted">加载中...</div>';
+        logsBox.innerHTML = '<div class="muted">' + (I.loading || '') + '</div>';
         fetch('/calendar/event-status-logs?event_id=' + encodeURIComponent(eventId), {
             method: 'GET',
             headers: { 'Accept': 'application/json' }
@@ -256,16 +265,16 @@ document.addEventListener('DOMContentLoaded', function () {
             return resp.json();
         }).then(function (data) {
             if (!data || data.ok !== true) {
-                logsBox.innerHTML = '<div class="muted">加载失败</div>';
+                logsBox.innerHTML = '<div class="muted">' + (I.loadFailed || '') + '</div>';
                 return;
             }
             if (data.missing_log_table) {
-                logsBox.innerHTML = '<div class="muted">' + (data.message || '未启用状态日志表') + '</div>';
+                logsBox.innerHTML = '<div class="muted">' + (data.message || '') + '</div>';
                 return;
             }
             renderLogs(data.logs || []);
         }).catch(function () {
-            logsBox.innerHTML = '<div class="muted">加载失败</div>';
+            logsBox.innerHTML = '<div class="muted">' + (I.loadFailed || '') + '</div>';
         });
     };
 

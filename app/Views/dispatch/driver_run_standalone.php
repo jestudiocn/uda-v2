@@ -9,6 +9,8 @@
 /** @var int $segmentTotal */
 /** @var int $segmentIndex */
 /** @var array<string,bool> $podDoneCodes */
+/** @var string $driverSameGeoBannerPrev */
+/** @var string $driverSameGeoBannerNext */
 $token = (string)($token ?? '');
 $driverError = (string)($driverError ?? '');
 $flash = (string)($flash ?? '');
@@ -19,18 +21,21 @@ $docMeta = $docMeta ?? null;
 $segmentTotal = (int)($segmentTotal ?? 0);
 $segmentIndex = (int)($segmentIndex ?? 0);
 $podDoneCodes = $podDoneCodes ?? [];
+$driverSameGeoBannerPrev = (string)($driverSameGeoBannerPrev ?? '');
+$driverSameGeoBannerNext = (string)($driverSameGeoBannerNext ?? '');
 $docNo = is_array($tokenRow) ? (string)($tokenRow['delivery_doc_no'] ?? '') : '';
 $line = is_array($docMeta) ? (string)($docMeta['dispatch_line'] ?? '') : '';
 $planDate = is_array($docMeta) ? (string)($docMeta['planned_delivery_date'] ?? '') : '';
+$dash = '—';
 ?>
 <!DOCTYPE html>
-<html lang="zh-CN">
+<html lang="th">
 <head>
     <meta charset="utf-8">
     <meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1">
-    <title>UDA-V2 内部管理系统</title>
+    <title>อัปโหลดรูป POD คนขับ · UDA</title>
     <style>
-        body{font-family:system-ui,-apple-system,"Segoe UI","Microsoft YaHei",sans-serif;margin:0;padding:12px;background:#f1f5f9;color:#0f172a;font-size:16px;line-height:1.45;}
+        body{font-family:"Sarabun","Noto Sans Thai",system-ui,-apple-system,"Segoe UI",sans-serif;margin:0;padding:12px;background:#f1f5f9;color:#0f172a;font-size:16px;line-height:1.45;}
         .box{background:#fff;border-radius:12px;padding:14px;margin-bottom:12px;box-shadow:0 1px 3px rgba(0,0,0,.08);}
         h1{font-size:1.15rem;margin:0 0 8px 0;}
         .muted{color:#64748b;font-size:.9rem;}
@@ -39,46 +44,80 @@ $planDate = is_array($docMeta) ? (string)($docMeta['planned_delivery_date'] ?? '
         .btn-sec{margin-top:8px;background:#64748b;}
         .stop{border:1px solid #e2e8f0;border-radius:10px;padding:10px;margin-bottom:10px;}
         .stop h2{margin:0 0 6px 0;font-size:1rem;}
-        label{display:block;margin:6px 0 4px;font-size:.85rem;color:#475569;}
-        input[type=file]{width:100%;font-size:.9rem;}
+        .pod-field-label{display:block;margin:10px 0 6px;font-size:.85rem;color:#475569;font-weight:600;}
+        .pod-field-label:first-of-type{margin-top:6px;}
+        .file-row{display:flex;flex-wrap:wrap;align-items:center;gap:10px;margin-bottom:4px;}
+        .file-input-sr-only{position:absolute;width:1px;height:1px;padding:0;margin:-1px;overflow:hidden;clip:rect(0,0,0,0);white-space:nowrap;border:0;}
+        .btn-file-pick{display:inline-block;width:auto;min-width:7.5rem;padding:10px 14px;border-radius:8px;background:#475569;color:#fff;font-weight:700;font-size:.9rem;cursor:pointer;text-align:center;box-sizing:border-box;}
+        .btn-file-pick:hover{background:#334155;}
+        .btn-file-pick.is-disabled{background:#94a3b8;cursor:not-allowed;pointer-events:none;}
+        .file-name{flex:1;min-width:0;font-size:.85rem;color:#64748b;word-break:break-word;line-height:1.35;}
         .ok{color:#15803d;font-weight:600;}
         .err{color:#b91c1c;font-weight:600;}
         .pill{display:inline-block;background:#e0f2fe;color:#0369a1;padding:2px 8px;border-radius:6px;font-size:.8rem;margin-right:4px;}
+        .pod-state-alert{
+            margin:10px 0 0;padding:10px 12px;border-radius:8px;font-weight:700;font-size:.95rem;
+            background:#fef3c7;color:#92400e;border:2px solid #f59e0b;
+            animation:podBlink 1s ease-in-out infinite alternate;
+        }
+        @keyframes podBlink{
+            from{opacity:1;box-shadow:0 0 0 0 rgba(245,158,11,.7);}
+            to{opacity:.88;box-shadow:0 0 14px 4px rgba(245,158,11,.45);}
+        }
+        .same-geo-banner{
+            margin:0 0 12px;padding:10px 12px;border-radius:10px;font-size:.9rem;font-weight:600;
+            background:#ecfeff;color:#0c4a6e;border:1px solid #06b6d4;line-height:1.4;
+        }
+        .stop-same-geo{
+            border-left:5px solid #0284c7;
+            background:linear-gradient(90deg,rgba(224,242,254,.65) 0,rgba(255,255,255,0) 14px);
+        }
+        .same-geo-badge{
+            display:inline-block;margin-left:8px;padding:2px 8px;border-radius:6px;font-size:.78rem;font-weight:700;
+            background:#fef08a;color:#713f12;border:1px solid #eab308;vertical-align:middle;
+        }
     </style>
 </head>
 <body>
 <?php if ($driverError !== ''): ?>
     <div class="box err">
         <?php if ($driverError === 'invalid'): ?>
-            链接无效或已过期，请向后台重新生成并索取新链接。
+            ลิงก์ไม่ถูกต้องหรือหมดอายุ โปรดขอลิงก์ใหม่จากผู้ดูแลระบบ
         <?php elseif ($driverError === 'empty'): ?>
-            本段暂无客户数据。
+            ช่วงนี้ยังไม่มีข้อมูลลูกค้า
         <?php else: ?>
-            发生错误，请重试或联系后台（<?php echo htmlspecialchars($driverError); ?>）
+            เกิดข้อผิดพลาด โปรดลองใหม่หรือติดต่อผู้ดูแล (<?php echo htmlspecialchars($driverError); ?>)
         <?php endif; ?>
     </div>
 <?php else: ?>
     <?php if ($flash === 'saved'): ?>
-        <div class="box ok">签收照片已保存。</div>
+        <div class="box ok">บันทึกรูปหลักฐานการรับ (POD) เรียบร้อยแล้ว</div>
     <?php endif; ?>
     <div class="box">
-        <h1>派送单（<?php echo htmlspecialchars($docNo); ?>）</h1>
+        <h1>ใบจัดส่ง (<?php echo htmlspecialchars($docNo); ?>)</h1>
         <div class="muted">
-            <?php if ($line !== ''): ?><span class="pill">派送线 <?php echo htmlspecialchars($line); ?></span><?php endif; ?>
-            <?php if ($planDate !== ''): ?><span class="pill">预计 <?php echo htmlspecialchars($planDate); ?></span><?php endif; ?>
-            第 <?php echo (int)$segmentIndex + 1; ?> / <?php echo max(1, $segmentTotal); ?> 段（每段最多 <?php echo 6; ?> 位客户）
+            <?php if ($line !== ''): ?><span class="pill">สายส่ง <?php echo htmlspecialchars($line); ?></span><?php endif; ?>
+            <?php if ($planDate !== ''): ?><span class="pill">นัดส่ง <?php echo htmlspecialchars($planDate); ?></span><?php endif; ?>
+            ช่วงที่ <?php echo (int)$segmentIndex + 1; ?> / <?php echo max(1, $segmentTotal); ?> (สูงสุด <?php echo 6; ?> ลูกค้าต่อช่วง)
         </div>
     </div>
     <div class="box">
         <?php if ($mapsUrl !== null && $mapsUrl !== ''): ?>
-            <a class="btn" href="<?php echo htmlspecialchars($mapsUrl); ?>" rel="noopener noreferrer">打开 Google Maps — 本段路线</a>
-            <p class="muted" style="margin:8px 0 0;">起点为打开手机地图时的当前位置；本段导航终点为下列清单中的最后一位客户。</p>
+            <a class="btn" href="<?php echo htmlspecialchars($mapsUrl); ?>" rel="noopener noreferrer">เปิด Google Maps — เส้นทางช่วงนี้</a>
+            <p class="muted" style="margin:8px 0 0;">จุดเริ่มต้นคือตำแหน่งปัจจุบันของคุณบนแผนที่; จุดหมายนำทางของช่วงนี้คือลูกค้าคนสุดท้ายในรายการด้านล่าง</p>
         <?php else: ?>
-            <p class="err">无法生成导航链接：缺少客户坐标或地址，请让后台在系统中补充。</p>
+            <p class="err">ไม่สามารถสร้างลิงก์นำทางได้ เนื่องจากขาดพิกัดหรือที่อยู่ลูกค้า โปรดให้ผู้ดูแลเพิ่มข้อมูลในระบบ</p>
         <?php endif; ?>
     </div>
     <div class="box">
-        <h1 style="margin-bottom:10px;">本段客户 · 上传签收照片（2 张）</h1>
+        <h1 style="margin-bottom:10px;">ลูกค้าช่วงนี้ · อัปโหลดรูป POD จำนวน 2 รูป</h1>
+        <?php if ($driverSameGeoBannerPrev !== ''): ?>
+            <div class="same-geo-banner" role="status"><?php echo htmlspecialchars($driverSameGeoBannerPrev); ?></div>
+        <?php endif; ?>
+        <?php if ($driverSameGeoBannerNext !== ''): ?>
+            <div class="same-geo-banner" role="status"><?php echo htmlspecialchars($driverSameGeoBannerNext); ?></div>
+        <?php endif; ?>
+        <p class="muted" style="margin:0 0 10px;">หมายเหตุพิกัดเดียวกัน: ลูกค้าที่อยู่<strong>ติดกันและพิกัดเดียวกัน</strong>ในช่วงนี้จะมีแถบสีด้านซ้ายและป้าย "พิกัดเดียวกัน" หากพิกัด<strong>ตรงกับลูกค้าคนสุดท้ายของช่วงก่อน หรือคนแรกของช่วงถัดไป</strong> แถบสีฟ้าด้านบนจะอธิบายว่าต้องส่งหลายลูกค้า จำนวนคนต่อช่วงและการแบ่งถุงไม่เปลี่ยน</p>
         <?php foreach ($segmentCustomers as $i => $row): ?>
             <?php
             $code = (string)($row['customer_code'] ?? '');
@@ -87,7 +126,7 @@ $planDate = is_array($docMeta) ? (string)($docMeta['planned_delivery_date'] ?? '
             $th = trim((string)($row['community_name_th'] ?? ''));
             $hn = trim((string)($row['addr_house_no'] ?? ''));
             $rs = trim((string)($row['addr_road_soi'] ?? ''));
-            $houseRoad = '—';
+            $houseRoad = $dash;
             if ($hn !== '' && $rs !== '') {
                 $houseRoad = $hn . ', ' . $rs;
             } elseif ($hn !== '') {
@@ -97,30 +136,127 @@ $planDate = is_array($docMeta) ? (string)($docMeta['planned_delivery_date'] ?? '
             }
             $pc = (int)($row['piece_count'] ?? 0);
             $done = !empty($podDoneCodes[$code]);
+            $podBlocked = !empty($row['pod_blocked']);
+            $sgLen = (int)($row['driver_same_geo_run_len'] ?? 0);
+            $sgIdx = (int)($row['driver_same_geo_run_index'] ?? 0);
+            $sgHue = isset($row['driver_same_geo_css_hue']) ? (int)$row['driver_same_geo_css_hue'] : -1;
+            $stopExtraClass = ($sgLen >= 2 && $sgIdx > 0 && $sgHue >= 0) ? ' stop-same-geo' : '';
+            $stopInline = '';
+            if ($sgLen >= 2 && $sgIdx > 0 && $sgHue >= 0) {
+                $stopInline = ' style="border-left-color:hsl(' . $sgHue . ',58%,42%);background:linear-gradient(90deg,hsla(' . $sgHue . ',85%,94%,.75) 0,rgba(255,255,255,0) 16px);"';
+            }
             ?>
-            <div class="stop">
-                <h2>#<?php echo (int)$i + 1; ?> <?php echo htmlspecialchars($code); ?> · <?php echo (int)$pc; ?> 件</h2>
-                <div class="muted">微信/Line：<?php echo htmlspecialchars($wx !== '' ? $wx : '—'); ?></div>
-                <div class="muted" style="margin-top:4px;">电话：<?php echo htmlspecialchars($phone !== '' ? $phone : '—'); ?></div>
-                <div style="margin-top:6px;">泰文小区：<?php echo htmlspecialchars($th !== '' ? $th : '—'); ?></div>
-                <div style="margin-top:4px;">门牌号 / 巷（路）：<?php echo htmlspecialchars($houseRoad); ?></div>
-                <?php if ($done): ?>
-                    <p class="ok" style="margin:8px 0 0;">照片已全部上传。</p>
+            <div class="stop<?php echo $stopExtraClass; ?>"<?php echo $stopInline !== '' ? $stopInline : ''; ?>>
+                <h2>#<?php echo (int)$i + 1; ?> <?php echo htmlspecialchars($code); ?> · <?php echo (int)$pc; ?> ชิ้น<?php if ($sgLen >= 2 && $sgIdx > 0): ?><span class="same-geo-badge">พิกัดเดียวกัน <?php echo (int)$sgIdx; ?>/<?php echo (int)$sgLen; ?></span><?php endif; ?></h2>
+                <?php if ($podBlocked): ?>
+                    <div class="pod-state-alert" role="alert">ลูกค้ารายนี้ถูกทำเครื่องหมายว่า (มีปัญหา) หรือ (หยุดชั่วคราว) ในระบบ: ห้ามส่งหรือเซ็นรับ ปิดการอัปโหลดรูปแล้ว</div>
+                <?php endif; ?>
+                <div class="muted">WeChat / Line: <?php echo htmlspecialchars($wx !== '' ? $wx : $dash); ?></div>
+                <div class="muted" style="margin-top:4px;">โทรศัพท์: <?php echo htmlspecialchars($phone !== '' ? $phone : $dash); ?></div>
+                <div style="margin-top:6px;">โครงการ (ภาษาไทย): <?php echo htmlspecialchars($th !== '' ? $th : $dash); ?></div>
+                <div style="margin-top:4px;">เลขที่ / ซอย-ถนน: <?php echo htmlspecialchars($houseRoad); ?></div>
+                <?php if ($podBlocked): ?>
+                    <?php if ($done): ?>
+                        <p class="muted" style="margin:10px 0 0;">มีประวัติการอัปโหลดแล้ว แต่เนื่องจากสถานะลูกค้าจึงแก้ไขหรืออัปโหลดเพิ่มไม่ได้</p>
+                    <?php else: ?>
+                        <p class="muted" style="margin:10px 0 0;">ปิดการอัปโหลดและส่งหลักฐานแล้ว (ปุ่มสีเทาใช้งานไม่ได้)</p>
+                        <form method="post" action="/dispatch/driver/pod-upload" enctype="multipart/form-data" style="margin-top:10px;pointer-events:none;opacity:.55;">
+                            <input type="hidden" name="t" value="<?php echo htmlspecialchars($token); ?>">
+                            <input type="hidden" name="customer_code" value="<?php echo htmlspecialchars($code); ?>">
+                            <span class="pod-field-label">รูปที่ 1</span>
+                            <div class="file-row">
+                                <span class="btn-file-pick is-disabled" aria-hidden="true">เลือกไฟล์</span>
+                                <span class="file-name">ปิดการอัปโหลด</span>
+                            </div>
+                            <span class="pod-field-label">รูปที่ 2</span>
+                            <div class="file-row">
+                                <span class="btn-file-pick is-disabled" aria-hidden="true">เลือกไฟล์</span>
+                                <span class="file-name">ปิดการอัปโหลด</span>
+                            </div>
+                            <button type="button" class="btn disabled" style="margin-top:10px;" disabled>ส่งรูปหลักฐานการรับ</button>
+                        </form>
+                    <?php endif; ?>
+                <?php elseif ($done): ?>
+                    <p class="ok" style="margin:8px 0 0;">อัปโหลดรูปครบแล้ว</p>
                 <?php else: ?>
-                    <form method="post" action="/dispatch/driver/pod-upload" enctype="multipart/form-data" style="margin-top:10px;">
+                    <?php $fid1 = 'pod_photo_1_' . (int)$i; $fid2 = 'pod_photo_2_' . (int)$i; ?>
+                    <form class="js-pod-precheck-form" method="post" action="/dispatch/driver/pod-upload" enctype="multipart/form-data" style="margin-top:10px;">
                         <input type="hidden" name="t" value="<?php echo htmlspecialchars($token); ?>">
                         <input type="hidden" name="customer_code" value="<?php echo htmlspecialchars($code); ?>">
-                        <label>照片 1</label>
-                        <input type="file" name="photo_1" accept="image/*" capture="environment" required>
-                        <label>照片 2</label>
-                        <input type="file" name="photo_2" accept="image/*" capture="environment" required>
-                        <button type="submit" class="btn" style="margin-top:10px;">提交签收照片</button>
+                        <span class="pod-field-label">รูปที่ 1</span>
+                        <div class="file-row">
+                            <input type="file" name="photo_1" id="<?php echo htmlspecialchars($fid1); ?>" class="file-input-sr-only" accept="image/*" capture="environment" required>
+                            <label for="<?php echo htmlspecialchars($fid1); ?>" class="btn-file-pick">เลือกไฟล์</label>
+                            <span class="file-name" data-for="<?php echo htmlspecialchars($fid1); ?>">ยังไม่ได้เลือกไฟล์</span>
+                        </div>
+                        <span class="pod-field-label">รูปที่ 2</span>
+                        <div class="file-row">
+                            <input type="file" name="photo_2" id="<?php echo htmlspecialchars($fid2); ?>" class="file-input-sr-only" accept="image/*" capture="environment" required>
+                            <label for="<?php echo htmlspecialchars($fid2); ?>" class="btn-file-pick">เลือกไฟล์</label>
+                            <span class="file-name" data-for="<?php echo htmlspecialchars($fid2); ?>">ยังไม่ได้เลือกไฟล์</span>
+                        </div>
+                        <button type="submit" class="btn" style="margin-top:10px;">ส่งรูปหลักฐานการรับ</button>
                     </form>
                 <?php endif; ?>
             </div>
         <?php endforeach; ?>
     </div>
-    <p class="muted" style="text-align:center;">下一段：请扫描下一段二维码，或使用后台提供的下一段链接。</p>
+    <p class="muted" style="text-align:center;">ช่วงถัดไป: สแกน QR ของช่วงถัดไป หรือใช้ลิงก์ที่ผู้ดูแลให้</p>
+    <script>
+    (function () {
+        var emptyFileMsg = 'ยังไม่ได้เลือกไฟล์';
+        document.querySelectorAll('input.file-input-sr-only[type="file"]').forEach(function (inp) {
+            inp.addEventListener('change', function () {
+                var span = document.querySelector('.file-name[data-for="' + inp.id + '"]');
+                if (!span) return;
+                var f = inp.files && inp.files[0];
+                span.textContent = f ? f.name : emptyFileMsg;
+            });
+        });
+        /* เมื่อกลับจากแอปแผนที่/ไลน์ ให้รีเฟรชเพื่อดูสถานะล่าสุด */
+        document.addEventListener('visibilitychange', function () {
+            if (document.visibilityState === 'hidden') {
+                document.body.setAttribute('data-driver-tab-was-hidden', '1');
+            } else if (document.visibilityState === 'visible' && document.body.getAttribute('data-driver-tab-was-hidden') === '1') {
+                window.location.reload();
+            }
+        });
+        document.querySelectorAll('form.js-pod-precheck-form').forEach(function (form) {
+            form.addEventListener('submit', function (ev) {
+                ev.preventDefault();
+                var btn = form.querySelector('button[type="submit"]');
+                var tEl = form.querySelector('input[name="t"]');
+                var cEl = form.querySelector('input[name="customer_code"]');
+                if (!tEl || !cEl) {
+                    HTMLFormElement.prototype.submit.call(form);
+                    return;
+                }
+                var origText = btn ? btn.textContent : '';
+                if (btn) {
+                    btn.disabled = true;
+                    btn.textContent = 'กำลังตรวจสอบ…';
+                }
+                var url = '/dispatch/driver/pod-precheck?t=' + encodeURIComponent(tEl.value) + '&customer_code=' + encodeURIComponent(cEl.value);
+                fetch(url, { credentials: 'same-origin' })
+                    .then(function (r) { return r.json(); })
+                    .then(function (j) {
+                        if (!j || !j.ok || j.blocked) {
+                            window.location.reload();
+                            return;
+                        }
+                        if (btn) {
+                            btn.disabled = false;
+                            btn.textContent = origText;
+                        }
+                        HTMLFormElement.prototype.submit.call(form);
+                    })
+                    .catch(function () {
+                        window.location.reload();
+                    });
+            });
+        });
+    })();
+    </script>
 <?php endif; ?>
 </body>
 </html>

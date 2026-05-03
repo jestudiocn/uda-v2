@@ -2,3 +2,4 @@
 /storage/*
 /.env
 /vendor.env
+/vendor/

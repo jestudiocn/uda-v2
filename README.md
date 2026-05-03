@@ -7,7 +7,7 @@ V2 目标：新架构重建，保留现有系统风格。
 1. 复制环境变量文件  
    - 将 `.env.example` 复制为 `.env`
 2. 创建数据库  
-   - 建议库名：`uda_v2`
+   - 建议库名：`uda_v2`（与 `.env` 中 `DB_NAME` 一致；与 ECS 常见配置对齐）
 3. 执行 SQL  
    - `database/migrations/001_init_core_tables.sql`
    - `database/migrations/003_add_user_contact_fields.sql`

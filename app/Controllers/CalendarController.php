@@ -42,12 +42,12 @@ class CalendarController
     private function typeLabel(string $type): string
     {
         if ($type === 'todo') {
-            return '待办';
+            return t('calendar.type.todo', '待办');
         }
         if ($type === 'meeting') {
-            return '会议';
+            return t('calendar.type.meeting', '会议');
         }
-        return '提醒';
+        return t('calendar.type.reminder', '提醒');
     }
 
     private function isSuperAdmin(): bool
@@ -240,11 +240,11 @@ class CalendarController
 
     public function create(): void
     {
-        if (!$this->hasAnyPermission(['menu.calendar', 'menu.dashboard'])) {
-            $this->denyNoPermission('无权限访问行事历管理');
+        if (!$this->hasAnyPermission(['menu.nav.calendar.create', 'menu.calendar', 'menu.dashboard'])) {
+            $this->denyNoPermission(t('calendar.deny.calendar', '无权限访问行事历管理'));
         }
 
-        $canCreate = $this->hasAnyPermission(['calendar.events.create', 'dashboard.calendar.manage']);
+        $canCreate = $this->hasAnyPermission(['menu.nav.calendar.create', 'calendar.events.create', 'dashboard.calendar.manage']);
         $conn = require __DIR__ . '/../../config/database.php';
         $message = '';
         $error = '';
@@ -273,12 +273,12 @@ class CalendarController
         }
 
         if (!$canCreate) {
-            $error = '你没有新增行事历事件权限。';
+            $error = t('calendar.error.no_create_permission', '你没有新增行事历事件权限。');
         }
 
         if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['create_calendar_event'])) {
             if (!$canCreate) {
-                $this->denyNoPermission('无权限新增行事历事件');
+                $this->denyNoPermission(t('calendar.deny.create_event', '无权限新增行事历事件'));
             }
             $startDate = trim((string)($_POST['start_date'] ?? ''));
             $endDate = trim((string)($_POST['end_date'] ?? ''));
@@ -306,15 +306,15 @@ class CalendarController
             ];
 
             if (!preg_match('/^\d{4}-\d{2}-\d{2}$/', $startDate) || !preg_match('/^\d{4}-\d{2}-\d{2}$/', $endDate) || $titleText === '') {
-                $error = '请填写正确的开始日期、结束日期与事件标题';
+                $error = t('calendar.error.invalid_form', '请填写正确的开始日期、结束日期与事件标题');
             } elseif ($startDate > $endDate) {
-                $error = '结束日期不能早于开始日期';
+                $error = t('calendar.error.end_before_start', '结束日期不能早于开始日期');
             } elseif (!in_array($eventType, self::EVENT_TYPES, true)) {
-                $error = '事项类型无效';
+                $error = t('calendar.error.invalid_event_type', '事项类型无效');
             } elseif (($eventType === 'todo' || $eventType === 'meeting') && count($assigneeIds) === 0) {
-                $error = '待办和会议至少需要指派一位成员';
+                $error = t('calendar.error.assignees_required', '待办和会议至少需要指派一位成员');
             } elseif (!$hasAssigneeTable && !empty($assigneeIds)) {
-                $error = '当前数据库尚未启用多人指派，请先执行 migration：006_alter_calendar_events_for_type_and_assignees.sql';
+                $error = t('calendar.error.assignees_migration', '当前数据库尚未启用多人指派，请先执行 migration：006_alter_calendar_events_for_type_and_assignees.sql');
             } else {
                 $userId = (int)($_SESSION['auth_user_id'] ?? 0);
                 $columns = ['event_date'];
@@ -372,9 +372,9 @@ class CalendarController
                             }
                         }
 
-                        $notifyTitle = '行事历新增事件：' . $titleText;
+                        $notifyTitle = sprintf(t('calendar.notify.new_event_title', '行事历新增事件：%s'), $titleText);
                         $notifyContent = sprintf(
-                            '类型：%s；日期：%s ~ %s',
+                            t('calendar.notify.new_event_body', '类型：%1$s；日期：%2$s ~ %3$s'),
                             $this->typeLabel($eventType),
                             $startDate,
                             $endDate
@@ -402,30 +402,30 @@ class CalendarController
                         exit;
                     } catch (Throwable $e) {
                         $conn->rollback();
-                        $error = '保存失败，请稍后重试';
+                        $error = t('calendar.error.save_failed', '保存失败，请稍后重试');
                     }
                 } else {
-                    $error = '保存失败，请稍后重试';
+                    $error = t('calendar.error.save_failed', '保存失败，请稍后重试');
                 }
             }
         }
 
         if (isset($_GET['msg']) && $_GET['msg'] === 'created') {
-            $message = '事件新增成功';
+            $message = t('calendar.msg.created', '事件新增成功');
         }
 
-        $title = '行事历管理 / 新增事件';
+        $title = t('calendar.controller.title.create', '行事历管理 / 新增事件');
         $contentView = __DIR__ . '/../Views/calendar/create.php';
         require __DIR__ . '/../Views/layouts/main.php';
     }
 
     public function events(): void
     {
-        if (!$this->hasAnyPermission(['menu.calendar', 'menu.dashboard'])) {
-            $this->denyNoPermission('无权限访问行事历管理');
+        if (!$this->hasAnyPermission(['menu.nav.calendar.create', 'menu.nav.calendar.events', 'menu.calendar', 'menu.dashboard'])) {
+            $this->denyNoPermission(t('calendar.deny.calendar', '无权限访问行事历管理'));
         }
-        if (!$this->hasAnyPermission(['calendar.events.view', 'dashboard.calendar.manage'])) {
-            $this->denyNoPermission('无权限查看事件列表');
+        if (!$this->hasAnyPermission(['menu.nav.calendar.events', 'calendar.events.view', 'dashboard.calendar.manage'])) {
+            $this->denyNoPermission(t('calendar.deny.events_list', '无权限查看事件列表'));
         }
 
         $conn = require __DIR__ . '/../../config/database.php';
@@ -632,7 +632,7 @@ class CalendarController
             }
         }
 
-        $title = '行事历管理 / 事件列表';
+        $title = t('calendar.controller.title.events', '行事历管理 / 事件列表');
         $contentView = __DIR__ . '/../Views/calendar/events.php';
         require __DIR__ . '/../Views/layouts/main.php';
     }
@@ -643,11 +643,11 @@ class CalendarController
             header('Location: /');
             exit;
         }
-        if (!$this->hasAnyPermission(['menu.calendar', 'menu.dashboard'])) {
-            $this->denyNoPermission('无权限更新事件状态');
+        if (!$this->hasAnyPermission(['menu.nav.calendar.create', 'menu.nav.calendar.events', 'menu.calendar', 'menu.dashboard'])) {
+            $this->denyNoPermission(t('calendar.deny.update_status', '无权限更新事件状态'));
         }
-        if (!$this->hasAnyPermission(['calendar.events.update_status', 'dashboard.calendar.manage'])) {
-            $this->denyNoPermission('无权限更新事件状态');
+        if (!$this->hasAnyPermission(['menu.nav.calendar.events', 'calendar.events.update_status', 'dashboard.calendar.manage'])) {
+            $this->denyNoPermission(t('calendar.deny.update_status', '无权限更新事件状态'));
         }
         $conn = require __DIR__ . '/../../config/database.php';
         $eventId = (int)($_POST['event_id'] ?? 0);
@@ -677,7 +677,7 @@ class CalendarController
         }
         $userId = (int)($_SESSION['auth_user_id'] ?? 0);
         if (!$this->canAccessEvent($conn, $eventId, $userId)) {
-            $this->denyNoPermission('无权限更新此事件');
+            $this->denyNoPermission(t('calendar.deny.update_event', '无权限更新此事件'));
         }
         $oldProgress = 0;
         $oldCompleted = 0;
@@ -720,8 +720,17 @@ class CalendarController
             'new_is_completed' => $isCompleted,
         ]);
         $assigneeIds = $this->fetchEventAssigneeIds($conn, $eventId);
-        $statusNotifyTitle = '行事历状态更新：' . ($eventTitle !== '' ? $eventTitle : ('#' . $eventId));
-        $statusNotifyContent = sprintf('进度 %d%% -> %d%%；完成：%s -> %s', $oldProgress, $progress, $oldCompleted ? '是' : '否', $isCompleted ? '是' : '否');
+        $statusNotifyTitle = sprintf(
+            t('calendar.notify.status_title', '行事历状态更新：%s'),
+            $eventTitle !== '' ? $eventTitle : ('#' . $eventId)
+        );
+        $statusNotifyContent = sprintf(
+            t('calendar.notify.status_body', '进度 %1$d%% -> %2$d%%；完成：%3$s -> %4$s'),
+            $oldProgress,
+            $progress,
+            $oldCompleted ? t('calendar.bool.yes', '是') : t('calendar.bool.no', '否'),
+            $isCompleted ? t('calendar.bool.yes', '是') : t('calendar.bool.no', '否')
+        );
         $this->sendCalendarNotifications(
             $conn,
             'calendar.status_updated',
@@ -740,8 +749,8 @@ class CalendarController
                 $eventCreatedBy,
                 $assigneeIds,
                 $userId,
-                '行事历事件已完成：' . ($eventTitle !== '' ? $eventTitle : ('#' . $eventId)),
-                sprintf('事件已标记完成，当前进度 %d%%', $progress)
+                sprintf(t('calendar.notify.completed_title', '行事历事件已完成：%s'), $eventTitle !== '' ? $eventTitle : ('#' . $eventId)),
+                sprintf(t('calendar.notify.completed_body', '事件已标记完成，当前进度 %d%%'), $progress)
             );
         }
         header('Location: ' . $redirect);
@@ -750,10 +759,16 @@ class CalendarController
 
     public function statusLogs(): void
     {
-        if (!$this->hasAnyPermission(['menu.calendar', 'menu.dashboard'])) {
+        if (!$this->hasAnyPermission(['menu.nav.calendar.create', 'menu.nav.calendar.events', 'menu.calendar', 'menu.dashboard'])) {
             http_response_code(403);
             header('Content-Type: application/json; charset=utf-8');
-            echo json_encode(['ok' => false, 'message' => '无权限']);
+            echo json_encode(['ok' => false, 'message' => t('calendar.json.no_permission', '无权限')]);
+            exit;
+        }
+        if (!$this->hasAnyPermission(['menu.nav.calendar.events', 'calendar.events.view', 'dashboard.calendar.manage'])) {
+            http_response_code(403);
+            header('Content-Type: application/json; charset=utf-8');
+            echo json_encode(['ok' => false, 'message' => t('calendar.json.no_permission', '无权限')]);
             exit;
         }
         $eventId = (int)($_GET['event_id'] ?? 0);
@@ -762,7 +777,7 @@ class CalendarController
         if ($eventId <= 0 || !$this->canAccessEvent($conn, $eventId, $userId)) {
             http_response_code(403);
             header('Content-Type: application/json; charset=utf-8');
-            echo json_encode(['ok' => false, 'message' => '无权限']);
+            echo json_encode(['ok' => false, 'message' => t('calendar.json.no_permission', '无权限')]);
             exit;
         }
         if (!$this->tableExists($conn, 'calendar_event_status_logs')) {
@@ -771,7 +786,7 @@ class CalendarController
                 'ok' => true,
                 'logs' => [],
                 'missing_log_table' => true,
-                'message' => '未找到状态日志表，请先执行 migration：009_create_calendar_event_status_logs.sql',
+                'message' => t('calendar.json.missing_logs_table', '未找到状态日志表，请先执行 migration：009_create_calendar_event_status_logs.sql'),
             ], JSON_UNESCAPED_UNICODE);
             exit;
         }

@@ -155,7 +155,25 @@ class FinanceController
 
     private function requireFinanceMenu(): void
     {
-        if (!$this->hasAnyPermission(['menu.finance', 'menu.dashboard'])) {
+        $financeNavKeys = [
+            'menu.nav.finance.transactions.create',
+            'menu.nav.finance.transactions.list',
+            'menu.nav.finance.payables.create',
+            'menu.nav.finance.payables.list',
+            'menu.nav.finance.receivables.create',
+            'menu.nav.finance.receivables.list',
+            'menu.nav.finance.reports',
+            'menu.nav.finance.ar.customers',
+            'menu.nav.finance.ar.billing_schemes',
+            'menu.nav.finance.ar.charges.create',
+            'menu.nav.finance.ar.charges.list',
+            'menu.nav.finance.ar.invoices',
+            'menu.nav.finance.ar.ledger',
+            'menu.nav.finance.accounts',
+            'menu.nav.finance.categories',
+            'menu.nav.finance.parties',
+        ];
+        if (!$this->hasAnyPermission(array_merge(['menu.finance', 'menu.dashboard'], $financeNavKeys))) {
             $this->denyNoPermission('无权限访问财务模块');
         }
     }
@@ -309,9 +327,9 @@ class FinanceController
             exit;
         }
         $permKeys = match ($kind) {
-            'transaction' => ['finance.transactions.view', 'finance.manage'],
-            'payable' => ['finance.payables.view', 'finance.manage'],
-            default => ['finance.receivables.view', 'finance.manage'],
+            'transaction' => ['menu.nav.finance.transactions.list', 'finance.transactions.view', 'finance.manage'],
+            'payable' => ['menu.nav.finance.payables.list', 'finance.payables.view', 'finance.manage'],
+            default => ['menu.nav.finance.receivables.list', 'finance.receivables.view', 'finance.manage'],
         };
         if (!$this->hasAnyPermission($permKeys)) {
             $this->denyNoPermission('无权限查看凭证');
@@ -788,7 +806,7 @@ class FinanceController
     public function transactionsCreate(): void
     {
         $this->requireFinanceMenu();
-        if (!$this->hasAnyPermission(['finance.transactions.create', 'finance.manage'])) {
+        if (!$this->hasAnyPermission(['menu.nav.finance.transactions.create', 'finance.transactions.create', 'finance.manage'])) {
             $this->denyNoPermission('无权限新增财务记录');
         }
         $conn = require __DIR__ . '/../../config/database.php';
@@ -888,7 +906,7 @@ class FinanceController
     public function transactionsList(): void
     {
         $this->requireFinanceMenu();
-        if (!$this->hasAnyPermission(['finance.transactions.view', 'finance.manage'])) {
+        if (!$this->hasAnyPermission(['menu.nav.finance.transactions.list', 'finance.transactions.view', 'finance.manage'])) {
             $this->denyNoPermission('无权限查看财务记录');
         }
         $conn = require __DIR__ . '/../../config/database.php';
@@ -980,7 +998,7 @@ class FinanceController
     public function transactionsEdit(): void
     {
         $this->requireFinanceMenu();
-        if (!$this->hasAnyPermission(['finance.transactions.edit', 'finance.manage'])) {
+        if (!$this->hasAnyPermission(['menu.nav.finance.transactions.list', 'finance.transactions.edit', 'finance.manage'])) {
             $this->denyNoPermission('无权限编辑财务记录');
         }
         $conn = require __DIR__ . '/../../config/database.php';
@@ -1040,7 +1058,7 @@ class FinanceController
     public function payablesCreate(): void
     {
         $this->requireFinanceMenu();
-        if (!$this->hasAnyPermission(['finance.payables.create', 'finance.manage'])) {
+        if (!$this->hasAnyPermission(['menu.nav.finance.payables.create', 'finance.payables.create', 'finance.manage'])) {
             $this->denyNoPermission('无权限新增待付款');
         }
         $conn = require __DIR__ . '/../../config/database.php';
@@ -1142,7 +1160,7 @@ class FinanceController
     public function payablesList(): void
     {
         $this->requireFinanceMenu();
-        if (!$this->hasAnyPermission(['finance.payables.view', 'finance.manage'])) {
+        if (!$this->hasAnyPermission(['menu.nav.finance.payables.list', 'finance.payables.view', 'finance.manage'])) {
             $this->denyNoPermission('无权限查看待付款');
         }
         $conn = require __DIR__ . '/../../config/database.php';
@@ -1251,7 +1269,7 @@ class FinanceController
     public function payablesSettle(): void
     {
         $this->requireFinanceMenu();
-        if (!$this->hasAnyPermission(['finance.payables.settle', 'finance.manage'])) {
+        if (!$this->hasAnyPermission(['menu.nav.finance.payables.list', 'finance.payables.settle', 'finance.manage'])) {
             $this->denyNoPermission('无权限确认付款');
         }
         $conn = require __DIR__ . '/../../config/database.php';
@@ -1391,7 +1409,7 @@ class FinanceController
     public function receivablesCreate(): void
     {
         $this->requireFinanceMenu();
-        if (!$this->hasAnyPermission(['finance.receivables.create', 'finance.manage'])) {
+        if (!$this->hasAnyPermission(['menu.nav.finance.receivables.create', 'finance.receivables.create', 'finance.manage'])) {
             $this->denyNoPermission('无权限新增待收款');
         }
         $conn = require __DIR__ . '/../../config/database.php';
@@ -1493,7 +1511,7 @@ class FinanceController
     public function receivablesList(): void
     {
         $this->requireFinanceMenu();
-        if (!$this->hasAnyPermission(['finance.receivables.view', 'finance.manage'])) {
+        if (!$this->hasAnyPermission(['menu.nav.finance.receivables.list', 'finance.receivables.view', 'finance.manage'])) {
             $this->denyNoPermission('无权限查看待收款');
         }
         $conn = require __DIR__ . '/../../config/database.php';
@@ -1602,7 +1620,7 @@ class FinanceController
     public function receivablesSettle(): void
     {
         $this->requireFinanceMenu();
-        if (!$this->hasAnyPermission(['finance.receivables.settle', 'finance.manage'])) {
+        if (!$this->hasAnyPermission(['menu.nav.finance.receivables.list', 'finance.receivables.settle', 'finance.manage'])) {
             $this->denyNoPermission('无权限确认收款');
         }
         $conn = require __DIR__ . '/../../config/database.php';
@@ -1775,11 +1793,11 @@ class FinanceController
     public function arBillingSchemes(): void
     {
         $this->requireFinanceMenu();
-        if (!$this->hasAnyPermission(['finance.ar.customers', 'finance.manage'])) {
+        if (!$this->hasAnyPermission(['menu.nav.finance.ar.customers', 'menu.nav.finance.ar.billing_schemes', 'finance.ar.customers', 'finance.manage'])) {
             $this->denyNoPermission('无权限维护计费方式');
         }
-        $canSchemeCreate = $this->hasAnyPermission(['finance.ar.billing_scheme.create', 'finance.ar.customers', 'finance.manage']);
-        $canSchemeToggle = $this->hasAnyPermission(['finance.ar.billing_scheme.toggle', 'finance.ar.customers', 'finance.manage']);
+        $canSchemeCreate = $this->hasAnyPermission(['menu.nav.finance.ar.billing_schemes', 'finance.ar.billing_scheme.create', 'finance.ar.customers', 'finance.manage']);
+        $canSchemeToggle = $this->hasAnyPermission(['menu.nav.finance.ar.billing_schemes', 'finance.ar.billing_scheme.toggle', 'finance.ar.customers', 'finance.manage']);
         $conn = require __DIR__ . '/../../config/database.php';
         $this->ensureFinanceSchema($conn);
         $this->ensureArSchema($conn);
@@ -1912,7 +1930,7 @@ class FinanceController
     public function arCustomers(): void
     {
         $this->requireFinanceMenu();
-        if (!$this->hasAnyPermission(['finance.ar.customers', 'finance.manage'])) {
+        if (!$this->hasAnyPermission(['menu.nav.finance.ar.customers', 'menu.nav.finance.ar.billing_schemes', 'finance.ar.customers', 'finance.manage'])) {
             $this->denyNoPermission('无权限管理应收客户档案');
         }
         $conn = require __DIR__ . '/../../config/database.php';
@@ -2073,7 +2091,7 @@ class FinanceController
     public function arChargesOptions(): void
     {
         $this->requireFinanceMenu();
-        if (!$this->hasAnyPermission(['finance.ar.charges.create', 'finance.manage'])) {
+        if (!$this->hasAnyPermission(['menu.nav.finance.ar.charges.create', 'finance.ar.charges.create', 'finance.manage'])) {
             $this->denyNoPermission('无权限维护费用类目与计费单位');
         }
         $conn = require __DIR__ . '/../../config/database.php';
@@ -2141,7 +2159,7 @@ class FinanceController
     public function arChargesCreate(): void
     {
         $this->requireFinanceMenu();
-        if (!$this->hasAnyPermission(['finance.ar.charges.create', 'finance.manage'])) {
+        if (!$this->hasAnyPermission(['menu.nav.finance.ar.charges.create', 'finance.ar.charges.create', 'finance.manage'])) {
             $this->denyNoPermission('无权限新增费用记录');
         }
         $conn = require __DIR__ . '/../../config/database.php';
@@ -2600,7 +2618,7 @@ class FinanceController
     public function arChargesList(): void
     {
         $this->requireFinanceMenu();
-        if (!$this->hasAnyPermission(['finance.ar.charges.view', 'finance.manage'])) {
+        if (!$this->hasAnyPermission(['menu.nav.finance.ar.charges.list', 'finance.ar.charges.view', 'finance.manage'])) {
             $this->denyNoPermission('无权限查看费用记录');
         }
         $conn = require __DIR__ . '/../../config/database.php';
@@ -2689,7 +2707,7 @@ class FinanceController
     public function arInvoicesList(): void
     {
         $this->requireFinanceMenu();
-        if (!$this->hasAnyPermission(['finance.ar.invoices.view', 'finance.manage'])) {
+        if (!$this->hasAnyPermission(['menu.nav.finance.ar.invoices', 'finance.ar.invoices.view', 'finance.manage'])) {
             $this->denyNoPermission('无权限查看应收账单');
         }
         $conn = require __DIR__ . '/../../config/database.php';
@@ -2698,7 +2716,7 @@ class FinanceController
         $message = '';
         $error = '';
         if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['build_invoice'])) {
-            if (!$this->hasAnyPermission(['finance.ar.invoices.create', 'finance.manage'])) {
+            if (!$this->hasAnyPermission(['menu.nav.finance.ar.invoices', 'finance.ar.invoices.create', 'finance.manage'])) {
                 $this->denyNoPermission('无权限生成账单');
             }
             $partyId = (int)($_POST['party_id'] ?? 0);
@@ -2908,7 +2926,7 @@ class FinanceController
     public function arInvoiceView(): void
     {
         $this->requireFinanceMenu();
-        if (!$this->hasAnyPermission(['finance.ar.invoices.view', 'finance.manage'])) {
+        if (!$this->hasAnyPermission(['menu.nav.finance.ar.invoices', 'finance.ar.invoices.view', 'finance.manage'])) {
             $this->denyNoPermission('无权限查看应收账单');
         }
         $conn = require __DIR__ . '/../../config/database.php';
@@ -2971,7 +2989,7 @@ class FinanceController
     public function arInvoicesExportUnpaid(): void
     {
         $this->requireFinanceMenu();
-        if (!$this->hasAnyPermission(['finance.ar.invoices.export', 'finance.manage'])) {
+        if (!$this->hasAnyPermission(['menu.nav.finance.ar.invoices', 'finance.ar.invoices.export', 'finance.manage'])) {
             $this->denyNoPermission('无权限导出未收款明细');
         }
         $conn = require __DIR__ . '/../../config/database.php';
@@ -3016,7 +3034,7 @@ class FinanceController
     public function arInvoicesPrintUnpaid(): void
     {
         $this->requireFinanceMenu();
-        if (!$this->hasAnyPermission(['finance.ar.invoices.export', 'finance.manage'])) {
+        if (!$this->hasAnyPermission(['menu.nav.finance.ar.invoices', 'finance.ar.invoices.export', 'finance.manage'])) {
             $this->denyNoPermission('无权限查看未收款打印明细');
         }
         $conn = require __DIR__ . '/../../config/database.php';
@@ -3039,7 +3057,7 @@ class FinanceController
     public function arLedger(): void
     {
         $this->requireFinanceMenu();
-        if (!$this->hasAnyPermission(['finance.ar.ledger.view', 'finance.manage'])) {
+        if (!$this->hasAnyPermission(['menu.nav.finance.ar.ledger', 'finance.ar.ledger.view', 'finance.manage'])) {
             $this->denyNoPermission('无权限查看应收台账');
         }
         $conn = require __DIR__ . '/../../config/database.php';
@@ -3112,7 +3130,7 @@ class FinanceController
     public function accounts(): void
     {
         $this->requireFinanceMenu();
-        if (!$this->hasAnyPermission(['finance.accounts.view', 'finance.manage'])) {
+        if (!$this->hasAnyPermission(['menu.nav.finance.accounts', 'finance.accounts.view', 'finance.manage'])) {
             $this->denyNoPermission('无权限查看账户');
         }
         $conn = require __DIR__ . '/../../config/database.php';
@@ -3120,7 +3138,7 @@ class FinanceController
         $message = '';
         $error = '';
         if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['create_account'])) {
-            if (!$this->hasAnyPermission(['finance.accounts.create', 'finance.manage'])) {
+            if (!$this->hasAnyPermission(['menu.nav.finance.accounts', 'finance.accounts.create', 'finance.manage'])) {
                 $this->denyNoPermission('无权限新增账户');
             }
             $accountName = trim((string)($_POST['account_name'] ?? ''));
@@ -3143,7 +3161,7 @@ class FinanceController
             }
         }
         if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['toggle_account']) && (int)($_POST['account_id'] ?? 0) > 0) {
-            if (!$this->hasAnyPermission(['finance.accounts.edit', 'finance.manage'])) {
+            if (!$this->hasAnyPermission(['menu.nav.finance.accounts', 'finance.accounts.edit', 'finance.manage'])) {
                 $this->denyNoPermission('无权限启停账户');
             }
             $id = (int)($_POST['account_id'] ?? 0);
@@ -3189,7 +3207,7 @@ class FinanceController
     public function categories(): void
     {
         $this->requireFinanceMenu();
-        if (!$this->hasAnyPermission(['finance.categories.view', 'finance.manage'])) {
+        if (!$this->hasAnyPermission(['menu.nav.finance.categories', 'finance.categories.view', 'finance.manage'])) {
             $this->denyNoPermission('无权限查看类目');
         }
         $conn = require __DIR__ . '/../../config/database.php';
@@ -3197,7 +3215,7 @@ class FinanceController
         $message = '';
         $error = '';
         if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['create_category'])) {
-            if (!$this->hasAnyPermission(['finance.categories.create', 'finance.manage'])) {
+            if (!$this->hasAnyPermission(['menu.nav.finance.categories', 'finance.categories.create', 'finance.manage'])) {
                 $this->denyNoPermission('无权限新增类目');
             }
             $name = trim((string)($_POST['name'] ?? ''));
@@ -3220,7 +3238,7 @@ class FinanceController
             }
         }
         if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['toggle_category']) && (int)($_POST['category_id'] ?? 0) > 0) {
-            if (!$this->hasAnyPermission(['finance.categories.edit', 'finance.manage'])) {
+            if (!$this->hasAnyPermission(['menu.nav.finance.categories', 'finance.categories.edit', 'finance.manage'])) {
                 $this->denyNoPermission('无权限启停类目');
             }
             $id = (int)($_POST['category_id'] ?? 0);
@@ -3266,7 +3284,7 @@ class FinanceController
     public function parties(): void
     {
         $this->requireFinanceMenu();
-        if (!$this->hasAnyPermission(['finance.parties.view', 'finance.manage'])) {
+        if (!$this->hasAnyPermission(['menu.nav.finance.parties', 'finance.parties.view', 'finance.manage'])) {
             $this->denyNoPermission('无权限查看付款收款对象');
         }
         $conn = require __DIR__ . '/../../config/database.php';
@@ -3277,7 +3295,7 @@ class FinanceController
         $message = '';
         $error = '';
         if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['create_party'])) {
-            if (!$this->hasAnyPermission(['finance.parties.create', 'finance.manage'])) {
+            if (!$this->hasAnyPermission(['menu.nav.finance.parties', 'finance.parties.create', 'finance.manage'])) {
                 $this->denyNoPermission('无权限新增对象');
             }
             $partyName = trim((string)($_POST['party_name'] ?? ''));
@@ -3303,7 +3321,7 @@ class FinanceController
             }
         }
         if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['toggle_party']) && (int)($_POST['party_id'] ?? 0) > 0) {
-            if (!$this->hasAnyPermission(['finance.parties.edit', 'finance.manage'])) {
+            if (!$this->hasAnyPermission(['menu.nav.finance.parties', 'finance.parties.edit', 'finance.manage'])) {
                 $this->denyNoPermission('无权限启停对象');
             }
             $id = (int)($_POST['party_id'] ?? 0);
@@ -3349,7 +3367,7 @@ class FinanceController
     public function reportsOverview(): void
     {
         $this->requireFinanceMenu();
-        if (!$this->hasAnyPermission(['finance.reports.view', 'finance.manage'])) {
+        if (!$this->hasAnyPermission(['menu.nav.finance.reports', 'finance.reports.view', 'finance.manage'])) {
             $this->denyNoPermission('无权限查看财务报表');
         }
         $conn = require __DIR__ . '/../../config/database.php';
@@ -3560,7 +3578,7 @@ class FinanceController
     public function reportsDetail(): void
     {
         $this->requireFinanceMenu();
-        if (!$this->hasAnyPermission(['finance.reports.view', 'finance.manage'])) {
+        if (!$this->hasAnyPermission(['menu.nav.finance.reports', 'finance.reports.view', 'finance.manage'])) {
             $this->denyNoPermission('无权限查看财务明细');
         }
         $conn = require __DIR__ . '/../../config/database.php';
@@ -3645,7 +3663,7 @@ class FinanceController
     public function reportsExport(): void
     {
         $this->requireFinanceMenu();
-        if (!$this->hasAnyPermission(['finance.reports.export', 'finance.manage'])) {
+        if (!$this->hasAnyPermission(['menu.nav.finance.reports', 'finance.reports.export', 'finance.manage'])) {
             $this->denyNoPermission('无权限导出财务报表');
         }
         $conn = require __DIR__ . '/../../config/database.php';

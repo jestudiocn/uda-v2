@@ -107,6 +107,7 @@
 8. `uda_warehouse_batches.jd_count` -> JD件数 -> JD件数 -> `/uda/warehouse/create-bundle`
 9. `uda_warehouse_batches.total_count` -> 总件数 -> 总件数 -> `/uda/warehouse/bundles`
 10. `uda_warehouse_batch_waybills.tracking_no` -> 面单号 -> 批次面单 -> `/uda/warehouse/view-bundle`
+11. `GET /uda/batches/packing-list-export?manifest_id=` -> 按日期号导出装箱单 -> PACKING LIST .xlsx（PhpSpreadsheet；净重规则见 `docs/站点修改日志_持续更新.md` §25）-> `/uda/batches/list?manifest_id=`（明细页按钮链至导出 URL）
 
 ---
 
